@@ -31,8 +31,10 @@ Experiment and benchmark discipline:
 - Do not submit runs whose saved `labless_source` snapshot changes `probe.py` or `benchmarking/`; labless marks locked-path changes invalid.
 
 Cluster and storage:
-- The login node has no GPU access, and has a different /tmp folder than the compute nodes. For full training runs (or anything that would take more than a few minutes) you should submit SLURM jobs to H100 nodes (`n-#`) or CPU nodes (`c-1`). If it's a quick single-GPU assessment you can use `ssh n-#` directly (but only when an idle GPU is available!).
-- Store large files, checkpoints, embeddings, caches, and pretrained models under `/data/$USER/nanopath` (configs use literal `$USER`, expanded by `train.py` at load time), not the repo.
+- Current cluster target is Compute Canada/Alliance Rorqual, not the Sophont/MedARC cluster. Do not use Sophont-specific `#SBATCH --partition=n`, `--qos`, `/data`, `/block`, or direct `ssh n-#` workflows.
+- Rorqual login nodes have internet but no GPU access; compute nodes have GPU access but no internet. Run `prepare.py ... download=True` only on the login node (prefer `tmux` for long downloads/unpacks), then verify with `download=False` before submitting GPU jobs.
+- Store large files, checkpoints, embeddings, HF/Torch/W&B caches, and pretrained models under `/scratch/$USER/nanopath` (or a project allocation if explicitly chosen), not the repo or `$HOME`. Configs should use literal `$USER`, expanded by `train.py` at load time.
+- Use `configs/cc-smoke.yaml`, `configs/cc-main.yaml`, and `submit/cc_train_1gpu.sbatch` for Rorqual runs. The default account is `def-ssfels`, email notifications go to `nima.ashjaee@ubc.ca`, and jobs should run W&B offline on compute nodes.
 - Fresh launches should overwrite any existing `project.output_dir` unless `train.resume` is set.
 
 Workflow:
