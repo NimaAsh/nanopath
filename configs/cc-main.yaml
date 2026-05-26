@@ -1,0 +1,98 @@
+project:
+  name: main-dinov2
+  family: nanopath
+  recipe_id: dinov2-vits14-reg-kde
+  output_dir: /scratch/$USER/nanopath/runs/main/default
+  wandb_dir: /scratch/$USER/nanopath/wandb
+
+data:
+  # dataset_dir holds the parquet shards (shard-NNNNN.parquet) that train.py reads.
+  # `prepare.py … download=True` populates it from the medarc/nanopath HF mirror.
+  dataset_dir: /scratch/$USER/nanopath/data/tcga_parquet
+  split_seed: 42
+  val_fraction: 0.05
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  global_crop_scale: [0.2, 1.0]
+  local_crop_scale: [0.03, 0.25]
+  color_jitter: 0.45
+  color_jitter_saturation: 0.4
+  hed_jitter: 0.12
+
+model:
+  type: dinov2_vits14_reg
+
+train:
+  seed: 1337
+  bf16: true
+  activation_checkpointing: false
+  batch_size: 128
+  num_workers: 8
+  prefetch_factor: 4
+  persistent_workers: true
+  max_train_flops: 1000000000000000000 # 1.0e18, the leaderboard FLOP budget
+  log_every: 20
+  save_every: 1000
+  # Validation pass every `eval_every` steps over `val_batches` held-out batches
+  # (the bottom data.val_fraction of patient ids by hash). Cheap diagnostic, not used for selection.
+  eval_every: 200
+  val_batches: 16
+  global_views: 2
+  local_views: 8
+  global_size: 224
+  local_size: 98
+  resume: null # optional explicit checkpoint path; null means always start fresh and wipe output_dir
+
+dino:
+  # DINOv2 recipe knobs. lr / kde_loss_weight / kde_concentration are the most-tuned
+  # from early sweeps; other values are established DINOv2 defaults that train.py
+  # reads but we rarely change. Anything not listed here is hardcoded in train.py.
+  lr: 1.0e-4
+  lr_min: 1.0e-6
+  warmup_flop_fraction: 0.0909
+  freeze_last_layer_fraction: 0.0091
+  layerwise_decay: 0.7
+  patch_embed_lr_mult: 0.2
+  drop_path_rate: 0.1
+  head_hidden_dim: 2048
+  head_bottleneck_dim: 384
+  clip_grad: 3.0
+  kde_loss_weight: 0.005
+  kde_concentration: 10.0
+
+probe:
+  enabled: true
+  model_weights: ema
+  count: 1 # 4 means probing at 25%, 50%, 75%, and 100% of the training FLOP budget. 1 means probing just at the end.
+  datasets:
+    - bracs
+    - break_his
+    - mhist
+    - pcam
+  segmentation_datasets:
+    - pannuke
+    - monusac
+    - consep
+  slide_datasets:
+    - ucla_lung
+  auc_datasets:
+    - surgen
+  survival_datasets:
+    - boehmk_pfs
+  robustness_datasets:
+    - pathorob
+  # Dataset roots are read by probe.py. Defaults are shared MedARC cluster
+  # paths. Off-cluster, point these at writable directories and run prepare.py
+  # with download=True to fetch/verify the data.
+  dataset_roots:
+    bracs: /scratch/$USER/nanopath/probes/bracs
+    break_his: /scratch/$USER/nanopath/probes/break_his
+    consep: /scratch/$USER/nanopath/probes/consep
+    boehmk_pfs: /scratch/$USER/nanopath/probes/boehmk_pfs
+    mhist: /scratch/$USER/nanopath/probes/mhist
+    monusac: /scratch/$USER/nanopath/probes/monusac
+    pcam: /scratch/$USER/nanopath/probes/pcam
+    pannuke: /scratch/$USER/nanopath/probes/pannuke
+    pathorob: /scratch/$USER/nanopath/probes/pathorob
+    surgen: /scratch/$USER/nanopath/probes/surgen
+    ucla_lung: /scratch/$USER/nanopath/probes/ucla_lung
