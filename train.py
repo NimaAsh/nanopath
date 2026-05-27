@@ -148,6 +148,7 @@ def update_ema(student_module, teacher_module, momentum):
 
 # Orchestrates one pretraining run: setup, train+probe loop, checkpoint, summary.
 def main():
+    run_started_at = time.monotonic()
     cfg = load_config()
     train_cfg = cfg["train"]
     dino_cfg = cfg["dino"]
@@ -419,6 +420,7 @@ def main():
         if completed:
             next_probe_idx = sum(target <= max(completed) for target in probe_targets)
     train_loop_started_at = time.monotonic()
+    setup_wall_seconds = train_loop_started_at - run_started_at
     last_saved_step = step
     last_console_step = step
     last_console_monotonic = time.monotonic()
@@ -607,6 +609,8 @@ def main():
             save_latest_checkpoint(step)
         run_probe_at(step, examples_seen)
     log_probe_results()
+    run_total_wall_seconds = time.monotonic() - run_started_at
+    post_train_wall_seconds = run_total_wall_seconds - setup_wall_seconds - train_loop_wall_seconds
     # Summary is the small, stable artifact downstream scripts and humans compare across runs.
     summary = {
         "project": cfg["project"]["name"],
@@ -619,7 +623,10 @@ def main():
         "batch_size": batch_size,
         "max_train_samples": max_train_samples,
         "max_train_flops": max_train_flops,
+        "run_total_wall_seconds": run_total_wall_seconds,
+        "setup_wall_seconds": setup_wall_seconds,
         "train_loop_wall_seconds": train_loop_wall_seconds,
+        "post_train_wall_seconds": post_train_wall_seconds,
         "stop_reason": stop_reason,
         "steps_completed": step,
         "tile_presentations": examples_seen,
@@ -653,6 +660,15 @@ def main():
     )
     for key in summary.keys():
         wandb_run.summary[key] = summary[key]
+    wandb_run.log(
+        {
+            "run/total_wall_seconds": run_total_wall_seconds,
+            "run/setup_wall_seconds": setup_wall_seconds,
+            "run/train_loop_wall_seconds": train_loop_wall_seconds,
+            "run/post_train_wall_seconds": post_train_wall_seconds,
+        },
+        step=step,
+    )
     wandb_run.finish()
 
 
