@@ -3,6 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
 #SBATCH --account=def-ssfels
@@ -39,6 +40,8 @@ export WANDB_MODE=offline
 echo "CONFIG_FILE=${CONFIG_FILE}"
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-local}"
 echo "SLURMD_NODENAME=${SLURMD_NODENAME:-local}"
+echo "SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unset}"
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || true
 
 # SLURM sends USR1 to this batch shell; forward it to the python child so
 # train.py saves, probes, and exits cleanly before wall-clock expiry.

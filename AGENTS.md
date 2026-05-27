@@ -36,6 +36,7 @@ Cluster and storage:
 - Store large files, checkpoints, embeddings, HF/Torch/W&B caches, and pretrained models under `/scratch/$USER/nanopath` (or a project allocation if explicitly chosen), not the repo or `$HOME`. Configs should use literal `$USER`, expanded by `train.py` at load time.
 - Use `configs/cc-smoke.yaml`, `configs/cc-main.yaml`, and `submit/cc_train_1gpu.sbatch` for Rorqual runs. The default account is `def-ssfels`, email notifications go to `nima.ashjaee@ubc.ca`, and jobs should run W&B offline on compute nodes.
 - Fresh launches should overwrite any existing `project.output_dir` unless `train.resume` is set.
+- On Alliance clusters, request enough CPUs for DataLoader/probe workers; the default can be 1 CPU and will throttle configs that set `train.num_workers: 4` or `8`. Do not add unnecessary lines like `OMP_NUM_THREADS` or `MKL_NUM_THREADS` exports.
 
 Workflow:
 - Do not stop after the first small fix on a difficult ask. Continue through the adjacent tasks needed to make the change credible, such as config updates, probes, throughput checks, README notes, or cleanup.
