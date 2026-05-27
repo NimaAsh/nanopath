@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
+# Single-GPU Trillium launcher. Trillium rejects --gres and --mem, and compute
+# nodes treat /home as read-only, so Slurm logs go under /scratch/$USER.
+# Prepare data on the login node first; compute jobs run W&B offline.
 #SBATCH --job-name=main_1gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-gpu=16
 #SBATCH --time=01:00:00
 #SBATCH --account=def-ssfels
 #SBATCH --mail-user=nima.ashjaee@ubc.ca
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --output=slurm/%j.out
-#SBATCH --error=slurm/%j.err
+#SBATCH --output=/scratch/%u/nanopath/slurm/%j.out
+#SBATCH --error=/scratch/%u/nanopath/slurm/%j.err
 #SBATCH --signal=B:USR1@900
 set -euo pipefail
 
-# Single-GPU Compute Canada launcher. Pass --account=... to sbatch if your
-# cluster account is not the default. Compute nodes are offline on Rorqual, so
-# prepare.py download=True must run on the login node before this job starts.
-# Optional first arg overrides the YAML config (defaults to cc-main.yaml). Any
-# extra args after that are forwarded to train.py as overrides, e.g.
-#   sbatch --account=def-... submit/cc_train_1gpu.sbatch configs/cc-main.yaml output_dir=/scratch/$USER/nanopath/runs/main/myrun
-# Logs land in repo-local slurm/<jobid>.{out,err}.
 REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONFIG_FILE="${1:-${REPO_DIR}/configs/cc-main.yaml}"
 [[ $# -gt 0 ]] && shift
@@ -44,11 +39,9 @@ mkdir -p "${BASE}/wandb/cache" "${BASE}/wandb/config" "${BASE}/wandb/data"
 echo "CONFIG_FILE=${CONFIG_FILE}"
 echo "SLURM_JOB_ID=${SLURM_JOB_ID:-local}"
 echo "SLURMD_NODENAME=${SLURMD_NODENAME:-local}"
-echo "SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unset}"
+echo "SLURM_CPUS_PER_GPU=${SLURM_CPUS_PER_GPU:-unset}"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || true
 
-# SLURM sends USR1 to this batch shell; forward it to the python child so
-# train.py saves, probes, and exits cleanly before wall-clock expiry.
 python train.py "${CONFIG_FILE}" "$@" &
 PY_PID=$!
 trap 'kill -USR1 "$PY_PID" 2>/dev/null || true' USR1
