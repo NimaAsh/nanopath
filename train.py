@@ -436,6 +436,7 @@ def main():
     last_saved_step = step
     last_console_step = step
     last_console_monotonic = time.monotonic()
+    last_log_wall_seconds = 0.0
     data_wait_started_at = time.monotonic()
     autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if train_cfg["bf16"] else contextlib.nullcontext()
     # Per-step FLOPs are measured once via FlopCounterMode on the first wrapped step (forward +
@@ -443,6 +444,7 @@ def main():
     # Counts the EMA teacher forward + DINO/iBOT projection heads, not just the backbone, so the
     # 1e18 leaderboard cap reflects real GPU work.
     measured_flops_per_step = None
+    gpu_events = []
 
     while examples_seen + batch_size <= max_train_samples and train_flops < max_train_flops:
         for batch in train_loader:
@@ -458,6 +460,8 @@ def main():
             # Data identifiers stay on CPU and feed coverage metrics; image tensors move below.
             for key, batch_key in (("sample", "sample_idx"), ("slide", "slide_id"), ("patient", "patient_id")):
                 pending_ids[key].update(int(x) for x in batch[batch_key].tolist())
+            gpu_start, gpu_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            gpu_start.record()
             global_views, local_views = [batch[key].to(device, non_blocking=True) for key in ("global_views", "local_views")]
             visible_now = batch_size * (train_cfg["global_views"] * global_patches + train_cfg["local_views"] * local_patches)
             # LR/WD/teacher/freeze/KDE schedules use the public FLOP budget, so a
@@ -507,6 +511,8 @@ def main():
                 update_ema(student_backbone, teacher_backbone, m)
                 update_ema(student_dino_head, teacher_dino_head, m)
                 update_ema(student_ibot_head, teacher_ibot_head, m)
+            gpu_end.record()
+            gpu_events.append((gpu_start, gpu_end))
             step_seconds = time.monotonic() - batch_started_at
             examples_seen += batch_size
             visible_patch_presentations += visible_now
@@ -535,6 +541,9 @@ def main():
                 console_now = time.monotonic()
                 console_gap_ms = 1000.0 * (console_now - last_console_monotonic)
                 steps_since_console = max(1, completed_step - last_console_step)
+                gpu_end.synchronize()
+                gpu_active_seconds = sum(start.elapsed_time(end) for start, end in gpu_events) / 1000.0
+                gpu_events.clear()
                 flop_steps_remaining = math.ceil(max(0, max_train_flops - train_flops) / max(1, step_train_flops))
                 sample_steps_remaining = max(0, max_train_samples - examples_seen) // batch_size
                 steps_remaining = min(flop_steps_remaining, sample_steps_remaining)
@@ -553,6 +562,7 @@ def main():
                     "step_seconds": step_seconds,
                     "data_seconds": data_seconds,
                     "data_wait_fraction": data_seconds / max(1e-6, batch_wall_seconds),
+                    "log_wall_seconds": last_log_wall_seconds,
                     "console_gap_ms": console_gap_ms,
                     "eta_seconds": eta_seconds,
                     "flop_fraction": min(1.0, float(train_flops) / float(max_train_flops)),
@@ -568,6 +578,9 @@ def main():
                     "train_flops": train_flops,
                     "gpu_mem_gb": gpu_mem_gb,
                     "gpu_peak_mem_gb": gpu_peak_mem_gb,
+                    "gpu_active_seconds": gpu_active_seconds,
+                    "gpu_step_seconds": gpu_active_seconds / steps_since_console,
+                    "gpu_active_fraction": gpu_active_seconds / elapsed,
                     "grad_norm": float(grad_norm.detach()),
                 }
                 train_log.update(unique_counts)
@@ -577,10 +590,11 @@ def main():
                     f"lr: {current_lr:.6f}  total: {reduced['total']:.4f}  "
                     f"dino: {reduced['dino']:.4f}  ibot: {reduced['ibot']:.4f}  kde: {reduced['kde']:.4f}  "
                     f"grad_norm: {train_log['grad_norm']:.4f}  flops/s: {flops_per_sec:.3e}  "
-                    f"time: {step_seconds:.6f}  data: {data_seconds:.6f}  "
-                    f"max mem: {int(gpu_peak_mem_gb * 1024)}",
+                    f"time: {step_seconds:.6f}  data: {data_seconds:.6f}  gpu: {train_log['gpu_active_fraction']:.2f}  "
+                    f"log: {last_log_wall_seconds:.3f}  max mem: {int(gpu_peak_mem_gb * 1024)}",
                     flush=True,
                 )
+                log_started_at = console_now
                 last_console_step = completed_step
                 last_console_monotonic = console_now
                 with metrics_path.open("a") as handle:
@@ -590,6 +604,7 @@ def main():
                     step=completed_step,
                 )
                 log_probe_results()
+                last_log_wall_seconds = time.monotonic() - log_started_at
                 torch.cuda.reset_peak_memory_stats(device)
             if save_checkpoints and completed_step % save_every == 0:
                 # Atomic rename keeps the previous good latest.pt intact if a
