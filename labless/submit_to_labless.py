@@ -395,7 +395,7 @@ def collect_source_context(main_ref: dict[str, str], summary: dict[str, Any], so
         "source_artifact": source,
         "review_files": review_files,
         "remote": str(git_meta.get("remote") or ""),
-        "branch": "",
+        "branch": str(git_meta.get("branch") or ""),
         "commit": commit,
         "main_context": main_ref,
         "dirty": bool(main_diff),
