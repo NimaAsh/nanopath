@@ -186,6 +186,16 @@ def main():
     output_dir = Path(cfg["project"]["output_dir"])
     wandb_dir = Path(cfg["project"]["wandb_dir"])
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    device_props = torch.cuda.get_device_properties(device)
+    hardware = {
+        "gpu_name": device_props.name, "gpu_total_mem_gb": device_props.total_memory / (1024**3),
+        "gpu_sm_count": device_props.multi_processor_count, "gpu_capability": f"{device_props.major}.{device_props.minor}",
+        "cuda_version": torch.version.cuda, "torch_version": torch.__version__, "torch_num_threads": torch.get_num_threads(),
+        "cpu_count": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+        "hostname": os.environ.get("HOSTNAME"), "slurm_node": os.environ.get("SLURMD_NODENAME"),
+        "slurm_cluster": os.environ.get("SLURM_CLUSTER_NAME"), "slurm_cpus_per_task": os.environ.get("SLURM_CPUS_PER_TASK"),
+        "slurm_cpus_per_gpu": os.environ.get("SLURM_CPUS_PER_GPU"),
+    }
     latest_checkpoint_path = output_dir / "latest.pt"
     # Fresh launches always start from scratch and wipe output_dir.
     resume_path = Path(train_cfg["resume"]) if train_cfg["resume"] else None
@@ -228,6 +238,8 @@ def main():
     wandb_run = wandb.init(**wandb_init)
     for key in ("probe/target_flops", "probe/wall_seconds"):
         wandb_run.define_metric(key, hidden=True, overwrite=True)
+    for key, value in hardware.items():
+        wandb_run.summary[f"hardware/{key}"] = value
     print(
         f"{console_prefix()} Run  start: {cfg['project']['name']}  "
         f"config: {cfg['config_path']}  batch_size: {batch_size}  max_train_samples: {max_train_samples}  "
@@ -513,6 +525,7 @@ def main():
                 visible_patches_per_sec = (visible_patch_presentations - last_visible_patch_presentations) / elapsed
                 flops_per_sec = (train_flops - last_train_flops) / elapsed
                 train_loop_wall_seconds = time.monotonic() - train_loop_started_at
+                batch_wall_seconds = step_seconds + data_seconds
                 last_time = now
                 last_examples = examples_seen
                 last_visible_patch_presentations = visible_patch_presentations
@@ -536,8 +549,10 @@ def main():
                     "visible_patches_per_sec": visible_patches_per_sec,
                     "flops_per_sec": flops_per_sec,
                     "wall_seconds": train_loop_wall_seconds,
+                    "batch_wall_seconds": batch_wall_seconds,
                     "step_seconds": step_seconds,
                     "data_seconds": data_seconds,
+                    "data_wait_fraction": data_seconds / max(1e-6, batch_wall_seconds),
                     "console_gap_ms": console_gap_ms,
                     "eta_seconds": eta_seconds,
                     "flop_fraction": min(1.0, float(train_flops) / float(max_train_flops)),
@@ -584,12 +599,14 @@ def main():
             # always runs after the loop exits, regardless of milestones.
             maybe_run_probe(completed_step)
             if completed_step % int(train_cfg["eval_every"]) == 0 or train_flops >= max_train_flops or examples_seen + batch_size > max_train_samples:
+                eval_started_at = time.monotonic()
                 val = evaluate(completed_step, teacher_temp, kde_scale)
-                val_log = {"step": completed_step, **{f"val_{k}": v for k, v in val.items()}}
+                val_wall_seconds = time.monotonic() - eval_started_at
+                val_log = {"step": completed_step, **{f"val_{k}": v for k, v in val.items()}, "val_wall_seconds": val_wall_seconds}
                 with metrics_path.open("a") as handle:
                     handle.write(json.dumps(val_log) + "\n")
-                wandb_run.log({f"val/{k}": v for k, v in val.items()}, step=completed_step)
-                print(f"{console_prefix()} Validation  [{completed_step}]  total: {val['total']:.4f}  dino: {val['dino']:.4f}  ibot: {val['ibot']:.4f}  kde: {val['kde']:.4f}", flush=True)
+                wandb_run.log({**{f"val/{k}": v for k, v in val.items()}, "val/wall_seconds": val_wall_seconds}, step=completed_step)
+                print(f"{console_prefix()} Validation  [{completed_step}]  total: {val['total']:.4f}  dino: {val['dino']:.4f}  ibot: {val['ibot']:.4f}  kde: {val['kde']:.4f}  wall: {val_wall_seconds:.2f}s", flush=True)
             step = completed_step
             data_wait_started_at = time.monotonic()
             if train_flops >= max_train_flops or examples_seen + batch_size > max_train_samples:
@@ -618,6 +635,7 @@ def main():
         "recipe_id": cfg["project"]["recipe_id"],
         "config_path": cfg["config_path"],
         "wandb": wandb_meta,
+        "hardware": hardware,
         "slurm_job_id": slurm_job_id,
         "backbone_activated_params": backbone_activated_params,
         "batch_size": batch_size,
@@ -636,6 +654,7 @@ def main():
         "flop_fraction": min(1.0, float(train_flops) / float(max_train_flops)),
         "sample_fraction": min(1.0, float(examples_seen) / float(max_train_samples)),
         # Average throughput over the train loop; wall time is diagnostic, not an eligibility cap.
+        "steps_per_second": step / max(1.0, train_loop_wall_seconds),
         "flops_per_sec": train_flops / max(1.0, train_loop_wall_seconds),
         "visible_patches_per_sec": visible_patch_presentations / max(1.0, train_loop_wall_seconds),
         "warmup_flop_fraction": dino_cfg["warmup_flop_fraction"],

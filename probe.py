@@ -986,12 +986,14 @@ def run_probe_job(request_path):
     transform, patch_transform = worker_probe_transforms(cfg)
 
     # Overlap CPU-heavy classification fitting with segmentation unless a baseline wrapper opts out.
+    wall_metrics = {}
     seg_results = {}
     def run_segmentation():
         for dataset in segmentation:
             print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_seg_start: {dataset}", flush=True)
             result, seg_wall = SEGMENTATION_RUNNERS[dataset](model, mean, std, device)
             seg_results[dataset] = result if isinstance(result, dict) else {"seg_val_jaccard": result}
+            wall_metrics[f"probe_{dataset}_wall_seconds"] = seg_wall
             print(
                 f"{console_prefix()} ProbeWorker  [{request['train_step']}]  "
                 f"inline_seg_done: {dataset}  jaccard={seg_results[dataset]['seg_val_jaccard']:.4f}  wall={seg_wall:.2f}s",
@@ -1008,10 +1010,12 @@ def run_probe_job(request_path):
         train_embs, train_labels = embed_classification_dataset(model, mean, std, dataset, "train", device, transform)
         val_embs, val_labels = embed_classification_dataset(model, mean, std, dataset, "val", device, transform)
         inline_metrics[dataset] = classification_head_metrics(train_embs, train_labels, val_embs, val_labels, SEG_SPLIT_SEED + classification.index(dataset))
+        wall = time.monotonic() - embed_started
+        wall_metrics[f"probe_{dataset}_wall_seconds"] = wall
         print(
             f"{console_prefix()} ProbeWorker  [{request['train_step']}]  "
             f"inline_done: {dataset}  linear_f1={inline_metrics[dataset]['linear_val_f1']:.4f}  knn_f1={inline_metrics[dataset]['knn_val_f1']:.4f}  "
-            f"fewshot_f1={inline_metrics[dataset]['fewshot_val_f1']:.4f}  wall={time.monotonic()-embed_started:.2f}s",
+            f"fewshot_f1={inline_metrics[dataset]['fewshot_val_f1']:.4f}  wall={wall:.2f}s",
             flush=True,
         )
 
@@ -1021,13 +1025,16 @@ def run_probe_job(request_path):
         embed_started = time.monotonic()
         embs, labels = embed_slide_dataset(model, mean, std, dataset, ("train", "val"), device, patch_transform)
         slide_metrics[dataset] = slide_linear_auc_metrics(embs, labels)
-        print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_slide_done: {dataset}  auc={slide_metrics[dataset]['val_auc']:.4f}  best_c={slide_metrics[dataset]['best_c']}  wall={time.monotonic()-embed_started:.2f}s", flush=True)
+        wall = time.monotonic() - embed_started
+        wall_metrics[f"probe_{dataset}_wall_seconds"] = wall
+        print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_slide_done: {dataset}  auc={slide_metrics[dataset]['val_auc']:.4f}  best_c={slide_metrics[dataset]['best_c']}  wall={wall:.2f}s", flush=True)
 
     auc_metrics = {}
     for dataset in auc:
         print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_auc_start: {dataset}", flush=True)
         result, wall = {"surgen": inline_surgen_ras_auc}[dataset](model, mean, std, device, patch_transform)
         auc_metrics[dataset] = result
+        wall_metrics[f"probe_{dataset}_wall_seconds"] = wall
         print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_auc_done: {dataset}  auc={result['val_auc']:.4f}  best_c={result['best_c']}  wall={wall:.2f}s", flush=True)
 
     survival_metrics = {}
@@ -1035,6 +1042,7 @@ def run_probe_job(request_path):
         print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_survival_start: {dataset}", flush=True)
         result, wall = inline_pathobench_survival(model, mean, std, dataset, device, patch_transform)
         survival_metrics[dataset] = result
+        wall_metrics[f"probe_{dataset}_wall_seconds"] = wall
         print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_survival_done: {dataset}  cindex={result['val_cindex']:.4f}  coxph_alpha={result['coxph_alpha']}  wall={wall:.2f}s", flush=True)
 
     rob_indices = {}
@@ -1042,6 +1050,7 @@ def run_probe_job(request_path):
         print(f"{console_prefix()} ProbeWorker  [{request['train_step']}]  inline_robustness_start: {dataset}", flush=True)
         subset_indices, wall = {"pathorob": inline_pathorob}[dataset](model, mean, std, device, patch_transform)
         rob_indices[dataset] = {**subset_indices, "mean": float(sum(subset_indices.values()) / len(subset_indices))}
+        wall_metrics[f"probe_{dataset}_wall_seconds"] = wall
         print(
             f"{console_prefix()} ProbeWorker  [{request['train_step']}]  "
             f"inline_robustness_done: {dataset}  {'  '.join(f'{k}={v:.4f}' for k, v in subset_indices.items())}  "
@@ -1058,6 +1067,7 @@ def run_probe_job(request_path):
 
     # Aggregate per-dataset metrics into the result file consumed by train.py.
     metrics = {}
+    metrics.update(wall_metrics)
     results = {}
     per_dataset_score = {}
     fold_scores = {}

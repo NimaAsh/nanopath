@@ -27,7 +27,7 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
   VENV_DIR="${HOME}/nanopath/.venv"
 fi
 source "${VENV_DIR}/bin/activate"
-BASE="/scratch/${USER}/nanopath"
+BASE="/scratch/$(id -un)/nanopath"
 export HF_HOME="${BASE}/cache/hf"
 export TORCH_HOME="${BASE}/cache/torch"
 export WANDB_CACHE_DIR="${BASE}/wandb/cache"

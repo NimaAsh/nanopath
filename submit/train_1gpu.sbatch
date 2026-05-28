@@ -6,7 +6,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --output=slurm/%j.out
 #SBATCH --error=slurm/%j.err
-#SBATCH --partition=n
+#SBATCH --partition=main
+#SBATCH --account=training
 #SBATCH --qos=normal # low | normal | top
 
 set -euo pipefail
