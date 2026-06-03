@@ -31,8 +31,11 @@ Experiment and benchmark discipline:
 - Do not submit runs whose saved `labless_source` snapshot changes `probe.py` or `benchmarking/`; labless marks locked-path changes invalid.
 
 Cluster and storage:
-- The login node has no GPU access, and has a different /tmp folder than the compute nodes. For full training runs (or anything that would take more than a few minutes) you should submit SLURM jobs to H100 nodes (`n-#`) or CPU nodes (`c-1`). If it's a quick single-GPU assessment you can use `ssh n-#` directly (but only when an idle GPU is available!).
-- Store large files, checkpoints, embeddings, caches, and pretrained models under `/data/$USER/nanopath` (configs use literal `$USER`, expanded by `train.py` at load time), not the repo.
+- Current branch target is Compute Canada/Alliance Rorqual and Trillium, not Nebius or the Sophont/MedARC cluster. Do not use Sophont-specific `#SBATCH --partition=n`, `/data`, `/block`, or direct `ssh n-#` workflows.
+- Alliance login nodes have internet but no GPU access; compute nodes have GPU access but no internet. Run `prepare.py ... download=True` only on the login node, then verify with `download=False` before submitting GPU jobs.
+- Store large files, checkpoints, embeddings, HF/Torch/W&B caches, probe data, and pretrained models under `/scratch/$USER/nanopath` (or a project allocation if explicitly chosen), not the repo or `$HOME`. Configs should use literal `$USER`, expanded by `train.py` at load time.
+- Use `configs/cc-smoke.yaml`, `configs/cc-main.yaml`, and `configs/cc-main-fastwarmup.yaml` for Alliance runs. Launch Rorqual with `submit/cc_train_1gpu.sbatch` and Trillium with `submit/trillium_train_1gpu.sbatch`; jobs run W&B offline on compute nodes.
+- Request enough CPUs for DataLoader/probe workers; Alliance defaults can be too low for configs with `train.num_workers: 16`. Do not add unnecessary lines like `OMP_NUM_THREADS` or `MKL_NUM_THREADS` exports.
 - Fresh launches should overwrite any existing `project.output_dir` unless `train.resume` is set.
 
 Workflow:
