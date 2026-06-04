@@ -6,8 +6,10 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-gpu=16
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 #SBATCH --account=def-ssfels
+#SBATCH --mail-user=nima.ashjaee@ubc.ca
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --output=/scratch/%u/nanopath-%j.out
 #SBATCH --error=/scratch/%u/nanopath-%j.err
 set -euo pipefail

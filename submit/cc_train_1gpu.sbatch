@@ -9,6 +9,8 @@
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
 #SBATCH --account=def-ssfels
+#SBATCH --mail-user=nima.ashjaee@ubc.ca
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --output=/scratch/%u/nanopath-%j.out
 #SBATCH --error=/scratch/%u/nanopath-%j.err
 set -euo pipefail
