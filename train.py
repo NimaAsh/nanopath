@@ -511,14 +511,12 @@ def main():
                 pending_ids[key].update(int(x) for x in batch[batch_key].tolist())
             global_views, local_views = [batch[key].to(device, non_blocking=True) for key in ("global_views", "local_views")]
             visible_now = batch_size * (train_cfg["global_views"] * global_patches + train_cfg["local_views"] * local_patches)
-            # LR/WD/teacher/freeze/KDE schedules key to whichever cap actually ends the run.
-            # The small model is sample-bound (hits the 1M-tile cap at ~21% of the FLOP budget),
-            # so flop-only keying would never anneal LR or finish the KDE/WD ramps; max() makes the
-            # schedule complete exactly at the binding cap (FLOP-bound configs are unaffected).
-            frac = min(1.0, max(train_flops / max_train_flops, examples_seen / max_train_samples))
-            # Warmup spans warmup_flop_fraction of the same binding cap, so LR ramps up over the
-            # first chunk of the actual run and the cosine below anneals to lr_min by the cap.
-            warmup = min(1.0, frac / dino_cfg["warmup_flop_fraction"])
+            # LR/WD/teacher/freeze/KDE schedules use the public FLOP budget, so a
+            # sample-capped run can stop before the schedule reaches its endpoint.
+            # (Tested re-keying to max(flop, sample) so the schedule completes at the 1M-tile cap:
+            # net -0.003 mean_probe_score, trading linear/robustness for fewshot/seg; not worth it.)
+            frac = min(1.0, train_flops / max_train_flops)
+            warmup = min(1.0, train_flops / max(1, warmup_train_flops))
             if warmup < 1.0:
                 lr = dino_cfg["lr"] * warmup
             else:
