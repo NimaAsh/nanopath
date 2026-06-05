@@ -162,11 +162,11 @@ def kde_loss(x, concentration):
     return torch.logsumexp(sim, dim=1).mean() - math.log(max(1, sim.shape[1] - 1))
 
 
-# Sample iBOT masking pattern: per-image bernoulli on whether to mask, then random patch ratio.
-def make_masks(batch, patches, device):
+# Sample iBOT masking pattern: per-image bernoulli (mask_prob) on whether to mask, then random patch ratio.
+def make_masks(batch, patches, device, mask_prob):
     masks = torch.zeros(batch, patches, dtype=torch.bool, device=device)
     for i in range(batch):
-        if random.random() < 0.5:
+        if random.random() < mask_prob:
             masks[i, torch.randperm(patches, device=device)[: int(patches * random.uniform(0.1, 0.45))]] = True
     idx = masks.flatten().nonzero().flatten()
     weights = (1 / masks.sum(-1).clamp(min=1)).unsqueeze(-1).expand_as(masks)[masks]
@@ -416,7 +416,7 @@ def main():
         local_loss = sum(dino_ce(x, y) for x in sl_cls.chunk(L) for y in t_prob) / (2 * L + 2)
         global_loss = dino_ce(sg_cls, t_prob.flatten(0, 1)) * 2 / (2 * L + 2)
         s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
-        ibot_loss = -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
+        ibot_loss = dino_cfg["ibot_loss_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
         kde = dino_cfg["kde_loss_weight"] * k_scale * sum(kde_loss(x, dino_cfg["kde_concentration"]) for x in sg["x_norm_clstoken"].chunk(train_cfg["global_views"]))
         return local_loss + global_loss, ibot_loss, kde
 
@@ -438,7 +438,7 @@ def main():
             b = vg.shape[0]
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
-                masks, mask_idx, mask_w = make_masks(b * train_cfg["global_views"], global_patches, device)
+                masks, mask_idx, mask_w = make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
                 dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
             sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
             n_batches += 1
@@ -511,10 +511,14 @@ def main():
                 pending_ids[key].update(int(x) for x in batch[batch_key].tolist())
             global_views, local_views = [batch[key].to(device, non_blocking=True) for key in ("global_views", "local_views")]
             visible_now = batch_size * (train_cfg["global_views"] * global_patches + train_cfg["local_views"] * local_patches)
-            # LR/WD/teacher/freeze/KDE schedules use the public FLOP budget, so a
-            # sample-capped run can stop before the schedule reaches its endpoint.
-            frac = min(1.0, train_flops / max_train_flops)
-            warmup = min(1.0, train_flops / max(1, warmup_train_flops))
+            # LR/WD/teacher/freeze/KDE schedules key to whichever cap actually ends the run.
+            # The small model is sample-bound (hits the 1M-tile cap at ~21% of the FLOP budget),
+            # so flop-only keying would never anneal LR or finish the KDE/WD ramps; max() makes the
+            # schedule complete exactly at the binding cap (FLOP-bound configs are unaffected).
+            frac = min(1.0, max(train_flops / max_train_flops, examples_seen / max_train_samples))
+            # Warmup spans warmup_flop_fraction of the same binding cap, so LR ramps up over the
+            # first chunk of the actual run and the cosine below anneals to lr_min by the cap.
+            warmup = min(1.0, frac / dino_cfg["warmup_flop_fraction"])
             if warmup < 1.0:
                 lr = dino_cfg["lr"] * warmup
             else:
@@ -526,7 +530,7 @@ def main():
                 base_lr = last_layer_lr if group["last_layer"] else lr
                 group["lr"] = base_lr * group["lr_mult"]
                 group["weight_decay"] = wd * group["wd_mult"]
-            masks, mask_idx, mask_w = make_masks(batch_size * train_cfg["global_views"], global_patches, device)
+            masks, mask_idx, mask_w = make_masks(batch_size * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
             kde_scale = min(1.0, max(0.0, (frac - 0.1) / 0.4))
             # Wrap forward + backward + opt.step in FlopCounterMode on the first step only;
             # subsequent steps reuse measured_flops_per_step (fixed shapes => fixed cost).

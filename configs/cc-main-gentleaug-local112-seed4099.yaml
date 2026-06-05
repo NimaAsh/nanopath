@@ -18,6 +18,7 @@ data:
   color_jitter: 0.3
   color_jitter_saturation: 0.25
   hed_jitter: 0.06
+  blur_prob: 0.35
 
 model:
   type: dinov2_vits14_reg
@@ -55,6 +56,8 @@ dino:
   clip_grad: 3.0
   kde_loss_weight: 0.005
   kde_concentration: 10.0
+  ibot_loss_weight: 1.0
+  mask_prob: 0.5
 
 probe:
   enabled: true

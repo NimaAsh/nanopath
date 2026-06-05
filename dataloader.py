@@ -135,7 +135,7 @@ class TCGATileDataset(Dataset):
                 v2.RandomVerticalFlip(),
                 v2.ColorJitter(data["color_jitter"], data["color_jitter"], data["color_jitter_saturation"], 0.0),
                 v2.RandomGrayscale(p=0.1),
-                v2.RandomApply([v2.GaussianBlur(9, sigma=(0.1, 1.8))], p=0.35),
+                v2.RandomApply([v2.GaussianBlur(9, sigma=(0.1, 1.8))], p=data["blur_prob"]),
                 v2.Normalize(mean=mean, std=std),
             ]
         )
@@ -148,7 +148,7 @@ class TCGATileDataset(Dataset):
                 v2.RandomVerticalFlip(),
                 v2.ColorJitter(data["color_jitter"], data["color_jitter"], data["color_jitter_saturation"], 0.0),
                 v2.RandomGrayscale(p=0.1),
-                v2.RandomApply([v2.GaussianBlur(9, sigma=(0.1, 1.8))], p=0.35),
+                v2.RandomApply([v2.GaussianBlur(9, sigma=(0.1, 1.8))], p=data["blur_prob"]),
                 v2.Normalize(mean=mean, std=std),
             ]
         )
