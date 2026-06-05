@@ -1,13 +1,13 @@
-# Alliance/Trillium: ViT-B sweep, "adapt MORE" direction. ViT-B (cc-main-vitb) won fewshot/seg/robustness but
-# collapsed on linear (-0.043) and slide (-0.042). NOTE: layerwise_decay 0.7 -> 0.85 makes the early backbone
-# layers adapt MORE (block0 lr_mult 0.85^11~0.17 vs 0.7^11~0.02), not less — the opposite of "freeze to preserve
-# pretrained". So this is a data point on the over-adaptation axis; cc-main-vitb-frozen (0.5) tests preserving.
+# Alliance: ViT-B recovery sweep, "preserve pretrained linear" direction. Single change vs cc-main-vitb:
+# layerwise_decay 0.7 -> 0.5, which FREEZES the early backbone layers harder (block0 lr_mult 0.5^11 ~ 5e-4 vs
+# 0.7^11 ~ 0.02) so only the top layers adapt. Tests whether ViT-B's linear/slide collapse is over-adaptation
+# of Meta's pretrained features. (Higher decay = MORE adaptation; cc-main-vitb-gentle at 0.85 tests that way.)
 
 project:
-  name: vitb-gentle
+  name: vitb-frozen
   family: nanopath
   recipe_id: dinov2-vitb14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main-leopard/vitb-gentle
+  output_dir: /scratch/$USER/nanopath/main-leopard/vitb-frozen
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -53,7 +53,7 @@ dino:
   adam_beta2: 0.999 # AdamW second-moment decay; 0.999 is the DINOv2 default
   warmup_flop_fraction: 0.0909
   freeze_last_layer_fraction: 0.0091
-  layerwise_decay: 0.85
+  layerwise_decay: 0.5
   patch_embed_lr_mult: 0.2
   drop_path_rate: 0.1
   head_hidden_dim: 2048
