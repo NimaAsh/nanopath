@@ -776,8 +776,11 @@ def _local_data_root(s):
 # config, otherwise they stay on writable shared /data for MedARC runs.
 def _local_output_root(s, force=False):
     p = _resolve(s)
-    mount = Path(*p.parts[:2]) if p.is_absolute() and len(p.parts) > 1 else p
-    if force or (p.is_absolute() and not p.exists() and (not mount.exists() or not os.access(mount, os.W_OK))):
+    # "Usable" means we can mkdir p later, i.e. its nearest existing ancestor (e.g. /scratch/$USER) is
+    # writable. Testing the 2-part mount (/scratch, /data) wrongly flagged writable /scratch/$USER trees
+    # as unusable and rewrote Alliance output_dirs into the repo.
+    ancestor = next(a for a in (p, *p.parents) if a.exists())
+    if force or (p.is_absolute() and not p.exists() and not os.access(ancestor, os.W_OK)):
         parts = list(p.parts)
         tail = parts[parts.index("nanopath") + 1:] if "nanopath" in parts else [p.name]
         return str(REPO_ROOT / "data" / Path(*tail))
