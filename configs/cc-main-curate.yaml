@@ -1,10 +1,12 @@
-# Alliance/Trillium run: test whether gentleaug stacks with the local112 context gain.
+# Alliance/Trillium CANDIDATE CHAMPION: gentleaug-local112 aug STACKED with the tissue-curate levers
+# (tissue rejection 0.5 + samples-keyed short warmup 0.03 + adam_beta2 0.99). Tests whether our aug gain
+# and their data-curation gain are additive. Beat the 0.6374 champion by >=0.006 to claim it.
 
 project:
-  name: gentleaug-local112
+  name: curate
   family: nanopath
   recipe_id: dinov2-vits14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main/gentleaug-local112
+  output_dir: /scratch/$USER/nanopath/main-leopard/curate
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -19,7 +21,7 @@ data:
   color_jitter_saturation: 0.25
   hed_jitter: 0.06
   blur_prob: 0.35
-  tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  tissue_thresh: 0.5 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
 
 model:
   type: dinov2_vits14_reg
@@ -47,8 +49,8 @@ train:
 dino:
   lr: 1.0e-4
   lr_min: 1.0e-6
-  adam_beta2: 0.999 # AdamW second-moment decay; 0.999 is the DINOv2 default
-  warmup_flop_fraction: 0.0909
+  adam_beta2: 0.99 # AdamW second-moment decay; 0.999 is the DINOv2 default
+  warmup_flop_fraction: 0.03
   freeze_last_layer_fraction: 0.0091
   layerwise_decay: 0.7
   patch_embed_lr_mult: 0.2

@@ -1,10 +1,12 @@
-# Alliance/Trillium run: test whether gentleaug stacks with the local112 context gain.
+# Alliance/Trillium ABLATION: gentleaug-local112 + tissue rejection 0.5 ONLY (default adam_beta2 0.999,
+# warmup 0.0909). Isolates the curation contribution; compare vs a gentleaug-local112 re-run (tissue 0.0)
+# for the curation delta, and vs cc-main-curate for the beta2+short-warmup delta.
 
 project:
-  name: gentleaug-local112
+  name: curate-augonly
   family: nanopath
   recipe_id: dinov2-vits14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main/gentleaug-local112
+  output_dir: /scratch/$USER/nanopath/main-leopard/curate-augonly
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -19,7 +21,7 @@ data:
   color_jitter_saturation: 0.25
   hed_jitter: 0.06
   blur_prob: 0.35
-  tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  tissue_thresh: 0.5 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
 
 model:
   type: dinov2_vits14_reg

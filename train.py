@@ -241,7 +241,7 @@ def main():
             p.requires_grad = False
     backbone_activated_params = sum(p.numel() for p in student_backbone.parameters() if p.requires_grad)
     # AdamW param groups carry per-parameter LR/WD multipliers (LWD + patch_embed + biases-no-WD).
-    opt = torch.optim.AdamW(build_param_groups(student_backbone, student_dino_head, student_ibot_head, dino_cfg["layerwise_decay"], dino_cfg["patch_embed_lr_mult"]), lr=1.0, betas=(0.9, 0.999))
+    opt = torch.optim.AdamW(build_param_groups(student_backbone, student_dino_head, student_ibot_head, dino_cfg["layerwise_decay"], dino_cfg["patch_embed_lr_mult"]), lr=1.0, betas=(0.9, dino_cfg["adam_beta2"]))
     step = 0
     batch_size = int(train_cfg["batch_size"])
     max_train_samples = int(train_cfg["max_train_samples"])
@@ -511,12 +511,13 @@ def main():
                 pending_ids[key].update(int(x) for x in batch[batch_key].tolist())
             global_views, local_views = [batch[key].to(device, non_blocking=True) for key in ("global_views", "local_views")]
             visible_now = batch_size * (train_cfg["global_views"] * global_patches + train_cfg["local_views"] * local_patches)
-            # LR/WD/teacher/freeze/KDE schedules use the public FLOP budget, so a
-            # sample-capped run can stop before the schedule reaches its endpoint.
-            # (Tested re-keying to max(flop, sample) so the schedule completes at the 1M-tile cap:
-            # net -0.003 mean_probe_score, trading linear/robustness for fewshot/seg; not worth it.)
+            # frac stays on the FLOP budget so LR holds near peak across the (sample-capped) run, which
+            # this short continual-pretrain wants. (Re-keying frac to samples to force LR annealing was
+            # tested: -0.003 mean_probe_score, trading linear/robustness for fewshot/seg; not worth it.)
             frac = min(1.0, train_flops / max_train_flops)
-            warmup = min(1.0, train_flops / max(1, warmup_train_flops))
+            # Warmup IS sample-keyed so it finishes at ~warmup_flop_fraction of the tile budget (~3-9%)
+            # instead of ~47% of a sample-bound run, leaving far more steps at peak LR.
+            warmup = min(1.0, examples_seen / max(1, max_train_samples * dino_cfg["warmup_flop_fraction"]))
             if warmup < 1.0:
                 lr = dino_cfg["lr"] * warmup
             else:

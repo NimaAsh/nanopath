@@ -1,10 +1,11 @@
-# Alliance/Trillium run: test whether gentleaug stacks with the local112 context gain.
+# Alliance/Trillium: faithful repro of the tissue-curate leaderboard run (STOCK aug, not gentleaug) =
+# tissue rejection 0.5 + samples-keyed short warmup 0.03 + adam_beta2 0.99. Anchor to validate our port.
 
 project:
-  name: gentleaug-local112
+  name: tissuecurate
   family: nanopath
   recipe_id: dinov2-vits14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main/gentleaug-local112
+  output_dir: /scratch/$USER/nanopath/main-leopard/tissuecurate
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -13,13 +14,13 @@ data:
   val_fraction: 0.05
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
-  global_crop_scale: [0.4, 1.0]
-  local_crop_scale: [0.08, 0.35]
-  color_jitter: 0.3
-  color_jitter_saturation: 0.25
-  hed_jitter: 0.06
+  global_crop_scale: [0.2, 1.0]
+  local_crop_scale: [0.03, 0.25]
+  color_jitter: 0.45
+  color_jitter_saturation: 0.4
+  hed_jitter: 0.12
   blur_prob: 0.35
-  tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  tissue_thresh: 0.5 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
 
 model:
   type: dinov2_vits14_reg
@@ -41,14 +42,14 @@ train:
   global_views: 2
   local_views: 8
   global_size: 224
-  local_size: 112
+  local_size: 98
   resume: null
 
 dino:
   lr: 1.0e-4
   lr_min: 1.0e-6
-  adam_beta2: 0.999 # AdamW second-moment decay; 0.999 is the DINOv2 default
-  warmup_flop_fraction: 0.0909
+  adam_beta2: 0.99 # AdamW second-moment decay; 0.999 is the DINOv2 default
+  warmup_flop_fraction: 0.03
   freeze_last_layer_fraction: 0.0091
   layerwise_decay: 0.7
   patch_embed_lr_mult: 0.2
