@@ -162,6 +162,19 @@ def kde_loss(x, concentration):
     return torch.logsumexp(sim, dim=1).mean() - math.log(max(1, sim.shape[1] - 1))
 
 
+# Gradient reversal (Ganin-Lempitsky): identity forward, negated gradient backward. Used by FINO-style
+# metadata guidance to make the encoder UNLEARN a spurious factor (the TCGA site) while the prototype
+# bank still aligns to it.
+class GradReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x
+
+    @staticmethod
+    def backward(ctx, g):
+        return g.neg()
+
+
 # Sample iBOT masking pattern: per-image bernoulli (mask_prob) on whether to mask, then random patch ratio.
 def make_masks(batch, patches, device, mask_prob):
     masks = torch.zeros(batch, patches, dtype=torch.bool, device=device)
@@ -265,6 +278,11 @@ def main():
     teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
     student_predictor = JEPAPredictor(student_backbone.embed_dim, dino_cfg["jepa_pred_depth"], dino_cfg["jepa_pred_width"]).to(device) if jepa else None
     patch_modules = [m for m in (student_ibot_head, student_predictor) if m is not None]
+    # FINO-style metadata guidance on the CLS token: align it to a per-site EMA prototype bank (contrastive),
+    # with gradient reversal when the site is treated as a spurious factor to suppress (dino.meta_spurious).
+    # Prototypes are EMA of teacher CLS (no grad); 1024 buckets cover TCGA's ~hundreds of sites.
+    meta = dino_cfg["meta_weight"] > 0
+    site_protos = F.normalize(torch.randn(1024, student_backbone.embed_dim, device=device), dim=-1) if meta else None
     for m in (teacher_dino_head, teacher_ibot_head):
         if m is None:
             continue
@@ -436,7 +454,7 @@ def main():
 
     # Compute (dino_loss, ibot_loss, kde) for one batch of (gf, lf) crops with the given masks +
     # schedule values. Used by both the train step and evaluate() (no_grad).
-    def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False, stage2=True):
+    def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False, stage2=True, site_idx=None, update_protos=True):
         with torch.no_grad():
             t = teacher_backbone(gf)
             if stage2:
@@ -468,7 +486,20 @@ def main():
         else:
             s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
             patch_loss = dino_cfg["ibot_loss_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
-        return local_loss + global_loss, patch_loss, kde
+        # FINO metadata guidance: student CLS (gradient-reversed if the site is spurious) -> CE against the
+        # per-site EMA prototype bank; prototypes EMA-track the teacher CLS for the seen sites (no grad).
+        if meta:
+            sidx = site_idx.repeat(train_cfg["global_views"])
+            scls = sg["x_norm_clstoken"]
+            scls = F.normalize(GradReverse.apply(scls) if dino_cfg["meta_spurious"] else scls, dim=-1)
+            meta_loss = dino_cfg["meta_weight"] * F.cross_entropy(scls @ site_protos.T / 0.1, sidx)
+            if update_protos:
+                with torch.no_grad():
+                    tcls = F.normalize(t["x_norm_clstoken"], dim=-1)
+                    site_protos[sidx] = F.normalize(0.9 * site_protos[sidx] + 0.1 * tcls, dim=-1)
+        else:
+            meta_loss = gf.new_zeros(())
+        return local_loss + global_loss, patch_loss, kde, meta_loss
 
     # Held-out validation pass: same DINO + iBOT + KDE losses on `val_batches` of the val split.
     # Schedule terms (teacher_temp, kde_scale) drift over training, so read val curves as same-step
@@ -489,8 +520,8 @@ def main():
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
                 masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device, block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
-                dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale, stage2=(not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"])
-            sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
+                dino_l, ibot_l, kde_v, meta_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale, stage2=(not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"], site_idx=(vbatch["site_id"] % 1024).to(device, non_blocking=True), update_protos=False)
+            sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v + meta_v)], device=device)
             n_batches += 1
         random.setstate(py_rng)
         torch.random.set_rng_state(cpu_rng)
@@ -593,11 +624,12 @@ def main():
                     lf = local_views.transpose(0, 1).flatten(0, 1)
                     # dino.jepa_stage2_frac>0 => JEPA-only stage 1 until that sample fraction, then concurrent DINO+JEPA.
                     stage2 = (not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"]
-                    dino_loss_value, ibot_loss, kde = compute_losses(
+                    dino_loss_value, ibot_loss, kde, meta_loss = compute_losses(
                         gf, lf, batch_size, masks, mask_idx, mask_w, teacher_temp, kde_scale,
                         ckpt=activation_checkpointing, stage2=stage2,
+                        site_idx=(batch["site_id"] % 1024).to(device, non_blocking=True),
                     )
-                    total_loss = dino_loss_value + ibot_loss + kde
+                    total_loss = dino_loss_value + ibot_loss + kde + meta_loss
                 opt.zero_grad(set_to_none=True)
                 total_loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(
@@ -624,6 +656,7 @@ def main():
                     "dino": float(dino_loss_value.detach()),
                     "ibot": float(ibot_loss.detach()),
                     "kde": float(kde.detach()),
+                    "meta": float(meta_loss.detach()),
                     "total": float(total_loss.detach()),
                 }
                 unique_counts = flush_unique_counts()

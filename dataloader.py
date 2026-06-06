@@ -214,6 +214,9 @@ class TCGATileDataset(Dataset):
         patient_id = "-".join(slide_stem.split("-")[:3])
         slide_key = int.from_bytes(hashlib.blake2b(slide_stem.encode(), digest_size=8).digest(), "big") & 0x7FFFFFFFFFFFFFFF
         patient_key = int.from_bytes(hashlib.blake2b(patient_id.encode(), digest_size=8).digest(), "big") & 0x7FFFFFFFFFFFFFFF
+        # Tissue source site (TSS): 2nd barcode field (TCGA-XX-...), the canonical TCGA batch/site confounder.
+        # Emitted as a stable hash for FINO-style metadata guidance (train.py takes it mod the prototype bank).
+        site_key = int.from_bytes(hashlib.blake2b(slide_stem.split("-")[1].encode(), digest_size=8).digest(), "big") & 0x7FFFFFFFFFFFFFFF
         # Augmentations are stochastic per view; reproducibility comes from worker seeds.
         global_views = torch.stack([self.global_aug(tile) for _ in range(self.global_views)])
         local_views = torch.stack([self.local_aug(tile) for _ in range(self.local_views)])
@@ -223,4 +226,5 @@ class TCGATileDataset(Dataset):
             "sample_idx": torch.tensor(int(idx), dtype=torch.int64),
             "slide_id": torch.tensor(slide_key, dtype=torch.int64),
             "patient_id": torch.tensor(patient_key, dtype=torch.int64),
+            "site_id": torch.tensor(site_key, dtype=torch.int64),
         }

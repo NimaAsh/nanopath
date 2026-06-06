@@ -1,13 +1,13 @@
-# Alliance: JEPA variant off cc-main-jepa (0.6481) — tissue curation 0.5 re-tested on JEPA.
+# Alliance: FINO-style metadata guidance on the JEPA champion — SUPPRESS the TCGA site (gradient reversal).
 # iBOT patch objective for an I-JEPA predictor that regresses the EMA teacher's patch features at masked
 # target blocks (latent smooth-L1), running alongside DINO + KDE. The one change vs the champion is the
 # patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: jepa-curate
+  name: fino
   family: nanopath
   recipe_id: dinov2-vits14-reg-jepa
-  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-curate
+  output_dir: /scratch/$USER/nanopath/main-leopard/fino
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -22,7 +22,7 @@ data:
   color_jitter_saturation: 0.25
   hed_jitter: 0.06
   blur_prob: 0.35
-  tissue_thresh: 0.5 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
   stain_norm: false # true applies Macenko-style stain normalization (needs stain_ref)
 
 model:
@@ -64,7 +64,7 @@ dino:
   kde_concentration: 10.0
   ibot_loss_weight: 1.0
   mask_prob: 0.5
-  meta_weight: 0.0 # FINO metadata guidance weight on the CLS token (0.03 = FINO); 0 = off
+  meta_weight: 0.03 # FINO metadata guidance weight on the CLS token (0.03 = FINO); 0 = off
   meta_spurious: true # true = suppress the TCGA site via gradient reversal; false = encode it (align)
   jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
   jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)

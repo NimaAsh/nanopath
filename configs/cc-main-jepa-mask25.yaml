@@ -64,6 +64,8 @@ dino:
   kde_concentration: 10.0
   ibot_loss_weight: 1.0
   mask_prob: 0.5
+  meta_weight: 0.0 # FINO metadata guidance weight on the CLS token (0.03 = FINO); 0 = off
+  meta_spurious: true # true = suppress the TCGA site via gradient reversal; false = encode it (align)
   jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
   jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
