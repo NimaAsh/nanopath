@@ -258,6 +258,9 @@ def main():
     # the predictor; iBOT only the head. (jepa_cluster is read lazily, so iBOT configs need not define it.)
     capi = jepa and dino_cfg["jepa_cluster"]
     use_head = (not jepa) or capi
+    # Block masks (large contiguous targets) only for plain JEPA's feature regression. CAPI predicts through
+    # the 131072-prototype iBOT head, so it reuses iBOT's lighter random masking to keep the CE memory bounded.
+    use_block_mask = jepa and not capi
     student_ibot_head = DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device) if use_head else None
     teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
     student_predictor = JEPAPredictor(student_backbone.embed_dim).to(device) if jepa else None
@@ -479,7 +482,7 @@ def main():
             b = vg.shape[0]
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
-                masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device) if jepa else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
+                masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device) if use_block_mask else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
                 dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
             sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
             n_batches += 1
@@ -571,7 +574,7 @@ def main():
                 base_lr = last_layer_lr if group["last_layer"] else lr
                 group["lr"] = base_lr * group["lr_mult"]
                 group["weight_decay"] = wd * group["wd_mult"]
-            masks, mask_idx, mask_w = make_block_mask(batch_size * train_cfg["global_views"], global_grid, device) if jepa else make_masks(batch_size * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
+            masks, mask_idx, mask_w = make_block_mask(batch_size * train_cfg["global_views"], global_grid, device) if use_block_mask else make_masks(batch_size * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
             kde_scale = min(1.0, max(0.0, (frac - 0.1) / 0.4))
             # Wrap forward + backward + opt.step in FlopCounterMode on the first step only;
             # subsequent steps reuse measured_flops_per_step (fixed shapes => fixed cost).
