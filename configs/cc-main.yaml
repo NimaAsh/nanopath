@@ -19,6 +19,7 @@ data:
   hed_jitter: 0.12
   blur_prob: 0.35
   tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  stain_norm: false # true applies Macenko-style stain normalization (needs stain_ref)
 
 model:
   type: dinov2_vits14_reg

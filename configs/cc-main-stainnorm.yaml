@@ -1,10 +1,14 @@
-# Alliance/Trillium run: replicate current best gentleaug-local112 with a different train seed.
+# Alliance: gentleaug-local112 + Macenko-style stain normalization (normalize source tile, then augment).
+# Fresh "input boundary" lever — removes per-slide stain-intensity variation; targets the generalization
+# slots (survival/seg/robustness). NOTE: stain_ref MUST be calibrated to TCGA (per-channel median 99th-pct
+# HED, ~0.05 scale) — the value below is a synthetic estimate. Recompute on the cluster (see handoff) and
+# SMOKE-TEST first: ref=1 produces black tiles, a too-large ref over-darkens/tints.
 
 project:
-  name: gentleaug-local112-seed2026
+  name: stainnorm
   family: nanopath
   recipe_id: dinov2-vits14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main/gentleaug-local112-seed2026
+  output_dir: /scratch/$USER/nanopath/main-leopard/stainnorm
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -20,13 +24,14 @@ data:
   hed_jitter: 0.06
   blur_prob: 0.35
   tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
-  stain_norm: false # true applies Macenko-style stain normalization (needs stain_ref)
+  stain_norm: true # true applies Macenko-style stain normalization (needs stain_ref)
+  stain_ref: [0.06, 0.06, 0.05] # per-channel median 99th-pct HED target; CALIBRATE to TCGA before a full run
 
 model:
   type: dinov2_vits14_reg
 
 train:
-  seed: 2026
+  seed: 1337
   bf16: true
   activation_checkpointing: false
   batch_size: 128

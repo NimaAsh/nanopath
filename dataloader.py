@@ -85,6 +85,26 @@ class HEDJitter(nn.Module):
         return torch.exp(log_rgb).clamp_(0.0, 1.0).permute(2, 0, 1)
 
 
+# Macenko-style stain normalization (fixed H&E vectors): deconvolve to HED, rescale each stain channel so
+# its 99th-percentile concentration matches `ref`, then reconvolve. Removes per-slide stain-intensity
+# variation (a known confounder), applied once per source tile before crops/jitter. `ref` MUST be the
+# dataset's per-channel median 99th-pct HED (~0.05 scale) — calibrate it; ref=1 produces near-black tiles.
+class StainNorm(nn.Module):
+    def __init__(self, ref):
+        super().__init__()
+        self.register_buffer("hed_from_rgb", HED_FROM_RGB)
+        self.register_buffer("rgb_from_hed", RGB_FROM_HED)
+        self.register_buffer("ref", torch.tensor(ref, dtype=torch.float32))
+
+    def forward(self, x):
+        rgb = x.permute(1, 2, 0).clamp_min(1e-6)
+        hed = ((torch.log(rgb) / LOG_1E6) @ self.hed_from_rgb.to(dtype=x.dtype)).clamp_min(0.0)
+        scale = torch.quantile(hed.reshape(-1, 3), 0.99, dim=0).clamp_min(1e-3)
+        hed = hed / scale * self.ref.to(dtype=x.dtype)
+        log_rgb = -(hed * (-LOG_1E6)) @ self.rgb_from_hed.to(dtype=x.dtype)
+        return torch.exp(log_rgb).clamp_(0.0, 1.0).permute(2, 0, 1)
+
+
 # Map-style TCGA tile dataset that emits global/local multi-view stacks for train.py.
 class TCGATileDataset(Dataset):
     # Glob shards, build a (shard_idx, row_in_shard) index over the requested patient
@@ -95,6 +115,8 @@ class TCGATileDataset(Dataset):
         train = cfg["train"]
         # >0 enables tissue rejection sampling in __getitem__: min fraction of saturated (non-background) pixels.
         self.tissue_thresh = float(data["tissue_thresh"])
+        # True applies Macenko-style stain normalization once per source tile (see StainNorm); needs data.stain_ref.
+        self.stain_norm = StainNorm(data["stain_ref"]) if data["stain_norm"] else None
         dataset_dir = Path(data["dataset_dir"])
         self.shards = sorted(dataset_dir.glob("shard-*.parquet"))
         if not self.shards:
@@ -186,6 +208,8 @@ class TCGATileDataset(Dataset):
             if float((sat > 0.07).float().mean()) >= self.tissue_thresh:
                 break
             idx = random.randint(0, self.shard_of.shape[0] - 1)
+        if self.stain_norm is not None:
+            tile = self.stain_norm(tile)
         slide_stem = rel.split("/", 1)[0]
         patient_id = "-".join(slide_stem.split("-")[:3])
         slide_key = int.from_bytes(hashlib.blake2b(slide_stem.encode(), digest_size=8).digest(), "big") & 0x7FFFFFFFFFFFFFFF
