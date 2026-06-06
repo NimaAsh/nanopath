@@ -1,13 +1,13 @@
-# Alliance: JEDI-style DINO + I-JEPA on the gentleaug-local112 champion recipe. jepa_weight>0 swaps the
+# Alliance: JEPA variant off cc-main-jepa (0.6481) — patch-loss weight 2.0 (vs 1.0).
 # iBOT patch objective for an I-JEPA predictor that regresses the EMA teacher's patch features at masked
 # target blocks (latent smooth-L1), running alongside DINO + KDE. The one change vs the champion is the
 # patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: jepa
+  name: jepa-w2
   family: nanopath
   recipe_id: dinov2-vits14-reg-jepa
-  output_dir: /scratch/$USER/nanopath/main-leopard/jepa
+  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-w2
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -64,7 +64,7 @@ dino:
   kde_concentration: 10.0
   ibot_loss_weight: 1.0
   mask_prob: 0.5
-  jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
+  jepa_weight: 2.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
   jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
 

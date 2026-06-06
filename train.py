@@ -263,7 +263,7 @@ def main():
     use_block_mask = jepa and not capi
     student_ibot_head = DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device) if use_head else None
     teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
-    student_predictor = JEPAPredictor(student_backbone.embed_dim).to(device) if jepa else None
+    student_predictor = JEPAPredictor(student_backbone.embed_dim, dino_cfg["jepa_pred_depth"]).to(device) if jepa else None
     patch_modules = [m for m in (student_ibot_head, student_predictor) if m is not None]
     for m in (teacher_dino_head, teacher_ibot_head):
         if m is None:
