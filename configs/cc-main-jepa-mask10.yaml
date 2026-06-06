@@ -1,13 +1,13 @@
-# Alliance: JEPA variant off cc-main-jepa (0.6481) — tissue curation 0.5 re-tested on JEPA.
+# Alliance: JEPA variant — lighter block mask coverage (0.10).
 # iBOT patch objective for an I-JEPA predictor that regresses the EMA teacher's patch features at masked
 # target blocks (latent smooth-L1), running alongside DINO + KDE. The one change vs the champion is the
 # patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: jepa-curate
+  name: jepa-mask10
   family: nanopath
   recipe_id: dinov2-vits14-reg-jepa
-  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-curate
+  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-mask10
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -22,7 +22,7 @@ data:
   color_jitter_saturation: 0.25
   hed_jitter: 0.06
   blur_prob: 0.35
-  tissue_thresh: 0.5 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
+  tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
   stain_norm: false # true applies Macenko-style stain normalization (needs stain_ref)
 
 model:
@@ -68,7 +68,7 @@ dino:
   jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
   jepa_pred_width: 0 # I-JEPA predictor width; 0 = full backbone dim, smaller (e.g. 192) regularizes
-  jepa_block_scale: 0.15 # I-JEPA target block size (fraction of the grid per block); mask coverage
+  jepa_block_scale: 0.10 # I-JEPA target block size (fraction of the grid per block); mask coverage
 
 probe:
   enabled: true

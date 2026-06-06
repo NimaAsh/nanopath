@@ -212,13 +212,16 @@ class DINOHead(nn.Module):
 # instead of iBOT's prototype cross-entropy. Reuses Block; trained by gradient (not EMA'd). Position is
 # already carried by the student tokens (backbone pos-embed), so no extra positional input is needed.
 class JEPAPredictor(nn.Module):
-    def __init__(self, dim, depth=4, heads=6):
+    def __init__(self, dim, depth=4, width=0, heads=6):
         super().__init__()
-        self.blocks = nn.ModuleList(Block(dim, heads, 4.0, 0.0) for _ in range(depth))
-        self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.proj = nn.Linear(dim, dim, bias=True)
+        w = width or dim  # 0 -> full backbone width; a narrower w (e.g. 192) regularizes the predictor
+        self.proj_in = nn.Linear(dim, w) if w != dim else nn.Identity()
+        self.blocks = nn.ModuleList(Block(w, heads, 4.0, 0.0) for _ in range(depth))
+        self.norm = nn.LayerNorm(w, eps=1e-6)
+        self.proj = nn.Linear(w, dim, bias=True)
 
     def forward(self, patch_tokens):
+        x = self.proj_in(patch_tokens)
         for blk in self.blocks:
-            patch_tokens = blk(patch_tokens)
-        return self.proj(self.norm(patch_tokens))
+            x = blk(x)
+        return self.proj(self.norm(x))

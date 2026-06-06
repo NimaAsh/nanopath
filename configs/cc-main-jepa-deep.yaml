@@ -67,6 +67,8 @@ dino:
   jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
   jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)
   jepa_pred_depth: 6 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
+  jepa_pred_width: 0 # I-JEPA predictor width; 0 = full backbone dim, smaller (e.g. 192) regularizes
+  jepa_block_scale: 0.15 # I-JEPA target block size (fraction of the grid per block); mask coverage
 
 probe:
   enabled: true
