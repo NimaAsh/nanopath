@@ -81,6 +81,34 @@ nprun() {
         | sort -nr | sed -n "${n}p" | cut -d' ' -f2-
 }
 
+# Overview of the last N finished runs: index (for nprun/lablessdryrun/npsubmit), score, run dir.
+nplist() {
+    local n=${1:-10} i d
+    for i in $(seq 1 "$n"); do
+        d=$(nprun "$i"); [[ -n "$d" ]] || continue
+        printf "%2d  %s  %s\n" "$i" "$(python - "$d/summary.json" 2>/dev/null <<'PY'
+import json,sys
+try: print("%.4f"%json.load(open(sys.argv[1]))["final_probe_score"])
+except Exception: print("  ?   ")
+PY
+)" "$d"
+    done
+}
+
+# Submit the Nth most recent run to Labless. run_name defaults to the dir name (truncated to 20 chars);
+# pass run_name + notes to override. Validate first with `lablessdryrun N` (non-destructive). 20 subs/24h.
+npsubmit() {
+    local n=${1:-1}
+    local repo=${NANOPATH_REPO:-$HOME/nanopath}
+    local d; d=$(nprun "$n")
+    local run_name=${2:-$(basename "$d" | cut -c1-20)}
+    local notes=${3:-"$(basename "$d")"}
+    echo "RUN_DIR=$d  run_name=$run_name"
+    cd "$repo" || return
+    source .venv/bin/activate
+    ./labless/submit_to_labless.py output_dir="$d" run_name="$run_name" notes="$notes"
+}
+
 # wandb sync the offline run matching a finished run dir's wandb id.
 wsyncnp() {
     local arg=${1:-1}
