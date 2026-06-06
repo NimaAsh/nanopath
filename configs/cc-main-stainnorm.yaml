@@ -25,7 +25,7 @@ data:
   blur_prob: 0.35
   tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
   stain_norm: true # true applies Macenko-style stain normalization (needs stain_ref)
-  stain_ref: [0.06, 0.06, 0.05] # per-channel median 99th-pct HED target; CALIBRATE to TCGA before a full run
+  stain_ref: [0.0803, 0.0352, 0.0594] # per-channel median 99th-pct HED target; CALIBRATE to TCGA before a full run
 
 model:
   type: dinov2_vits14_reg
