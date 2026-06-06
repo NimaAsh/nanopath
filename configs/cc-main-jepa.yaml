@@ -1,10 +1,13 @@
-# Alliance/Trillium run: test whether gentleaug stacks with the local112 context gain.
+# Alliance: JEDI-style DINO + I-JEPA on the gentleaug-local112 champion recipe. jepa_weight>0 swaps the
+# iBOT patch objective for an I-JEPA predictor that regresses the EMA teacher's patch features at masked
+# target blocks (latent smooth-L1), running alongside DINO + KDE. The one change vs the champion is the
+# patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: gentleaug-local112
+  name: jepa
   family: nanopath
-  recipe_id: dinov2-vits14-reg-kde
-  output_dir: /scratch/$USER/nanopath/main/gentleaug-local112
+  recipe_id: dinov2-vits14-reg-jepa
+  output_dir: /scratch/$USER/nanopath/main-leopard/jepa
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -61,7 +64,7 @@ dino:
   kde_concentration: 10.0
   ibot_loss_weight: 1.0
   mask_prob: 0.5
-  jepa_weight: 0.0 # >0 swaps iBOT for the I-JEPA predictor (latent smooth-L1 regression) at this loss weight
+  jepa_weight: 1.0 # >0 swaps iBOT for the I-JEPA predictor (latent smooth-L1 regression) at this loss weight
 
 probe:
   enabled: true
