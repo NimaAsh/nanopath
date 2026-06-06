@@ -436,19 +436,26 @@ def main():
 
     # Compute (dino_loss, ibot_loss, kde) for one batch of (gf, lf) crops with the given masks +
     # schedule values. Used by both the train step and evaluate() (no_grad).
-    def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False):
+    def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False, stage2=True):
         with torch.no_grad():
             t = teacher_backbone(gf)
-            t_cls = teacher_dino_head(t["x_norm_clstoken"]).chunk(train_cfg["global_views"])
-            t_prob = sinkhorn(torch.cat((t_cls[1], t_cls[0])), t_temp).view(2, b, -1)
+            if stage2:
+                t_cls = teacher_dino_head(t["x_norm_clstoken"]).chunk(train_cfg["global_views"])
+                t_prob = sinkhorn(torch.cat((t_cls[1], t_cls[0])), t_temp).view(2, b, -1)
             if use_head:
                 t_patch_prob = sinkhorn(teacher_ibot_head(t["x_norm_patchtokens"].flatten(0, 1)[mask_idx]), t_temp)
         sg = student_backbone(gf, masks=masks, checkpoint=ckpt)
         sl = student_backbone(lf, checkpoint=ckpt)
-        sg_cls, sl_cls = student_dino_head(sg["x_norm_clstoken"]), student_dino_head(sl["x_norm_clstoken"])
-        L = train_cfg["local_views"]
-        local_loss = sum(dino_ce(x, y) for x in sl_cls.chunk(L) for y in t_prob) / (2 * L + 2)
-        global_loss = dino_ce(sg_cls, t_prob.flatten(0, 1)) * 2 / (2 * L + 2)
+        # DINO CLS self-distillation + KDE. With dino.jepa_stage2_frac>0 there's a JEPA-only stage 1 (these are
+        # off until that sample fraction); the backbone forwards above always run so per-step FLOPs stay ~constant.
+        if stage2:
+            sg_cls, sl_cls = student_dino_head(sg["x_norm_clstoken"]), student_dino_head(sl["x_norm_clstoken"])
+            L = train_cfg["local_views"]
+            local_loss = sum(dino_ce(x, y) for x in sl_cls.chunk(L) for y in t_prob) / (2 * L + 2)
+            global_loss = dino_ce(sg_cls, t_prob.flatten(0, 1)) * 2 / (2 * L + 2)
+            kde = dino_cfg["kde_loss_weight"] * k_scale * sum(kde_loss(x, dino_cfg["kde_concentration"]) for x in sg["x_norm_clstoken"].chunk(train_cfg["global_views"]))
+        else:
+            local_loss = global_loss = kde = gf.new_zeros(())
         # patch_loss (returned in the iBOT slot): CAPI = predictor->iBOT head -> CE vs the teacher's Sinkhorn
         # clusters; JEPA = predictor -> smooth-L1 regression to raw EMA-teacher patch reps; iBOT = head -> CE.
         if capi:
@@ -461,7 +468,6 @@ def main():
         else:
             s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
             patch_loss = dino_cfg["ibot_loss_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
-        kde = dino_cfg["kde_loss_weight"] * k_scale * sum(kde_loss(x, dino_cfg["kde_concentration"]) for x in sg["x_norm_clstoken"].chunk(train_cfg["global_views"]))
         return local_loss + global_loss, patch_loss, kde
 
     # Held-out validation pass: same DINO + iBOT + KDE losses on `val_batches` of the val split.
@@ -483,7 +489,7 @@ def main():
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
                 masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device, block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
-                dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
+                dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale, stage2=(not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"])
             sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
             n_batches += 1
         random.setstate(py_rng)
@@ -585,9 +591,11 @@ def main():
                     # so [crop0_img0, crop0_img1, ..., crop1_img0, ...] for clean teacher/student alignment.
                     gf = global_views.transpose(0, 1).flatten(0, 1)
                     lf = local_views.transpose(0, 1).flatten(0, 1)
+                    # dino.jepa_stage2_frac>0 => JEPA-only stage 1 until that sample fraction, then concurrent DINO+JEPA.
+                    stage2 = (not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"]
                     dino_loss_value, ibot_loss, kde = compute_losses(
                         gf, lf, batch_size, masks, mask_idx, mask_w, teacher_temp, kde_scale,
-                        ckpt=activation_checkpointing,
+                        ckpt=activation_checkpointing, stage2=stage2,
                     )
                     total_loss = dino_loss_value + ibot_loss + kde
                 opt.zero_grad(set_to_none=True)

@@ -69,6 +69,7 @@ dino:
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
   jepa_pred_width: 0 # I-JEPA predictor width; 0 = full backbone dim, smaller (e.g. 192) regularizes
   jepa_block_scale: 0.25 # I-JEPA target block size (fraction of the grid per block); mask coverage
+  jepa_stage2_frac: 0.0 # >0 => JEPA-only stage 1 until this sample fraction, then concurrent DINO+JEPA
 
 probe:
   enabled: true

@@ -1,14 +1,13 @@
-# Alliance: CAPI-style patch objective on the gentleaug-local112 champion. jepa_weight>0 + jepa_cluster=true
-# routes the student's masked patches through the I-JEPA predictor and then the iBOT prototype head, training
-# them (CE) against the EMA teacher's Sinkhorn-clustered patch targets — i.e. iBOT's collapse-resistant
-# clustered targets predicted via a predictor (Darcet et al. 2025, CAPI). DINO CLS + KDE run alongside.
-# One change vs the champion: the patch objective (iBOT -> CAPI). Keep save_every null.
+# Alliance: dual-stage JEDI — JEPA-only stage 1 (first 25% of tiles) then concurrent DINO+JEPA.
+# iBOT patch objective for an I-JEPA predictor that regresses the EMA teacher's patch features at masked
+# target blocks (latent smooth-L1), running alongside DINO + KDE. The one change vs the champion is the
+# patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: capi
+  name: jepa-dual
   family: nanopath
-  recipe_id: dinov2-vits14-reg-capi
-  output_dir: /scratch/$USER/nanopath/main-leopard/capi
+  recipe_id: dinov2-vits14-reg-jepa
+  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-dual
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -66,11 +65,11 @@ dino:
   ibot_loss_weight: 1.0
   mask_prob: 0.5
   jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
-  jepa_cluster: true # true -> CAPI (predict Sinkhorn clusters via the predictor); false -> plain JEPA regression
+  jepa_cluster: false # false -> plain JEPA (smooth-L1 regression); true -> CAPI (predict Sinkhorn clusters)
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
   jepa_pred_width: 0 # I-JEPA predictor width; 0 = full backbone dim, smaller (e.g. 192) regularizes
   jepa_block_scale: 0.15 # I-JEPA target block size (fraction of the grid per block); mask coverage
-  jepa_stage2_frac: 0.0 # >0 => JEPA-only stage 1 until this sample fraction, then concurrent DINO+JEPA
+  jepa_stage2_frac: 0.25 # >0 => JEPA-only stage 1 until this sample fraction, then concurrent DINO+JEPA
 
 probe:
   enabled: true
