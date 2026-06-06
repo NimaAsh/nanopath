@@ -21,6 +21,7 @@
 import hashlib
 import io
 import random
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -125,15 +126,22 @@ class TCGATileDataset(Dataset):
                 f"`python prepare.py {cfg['config_path']} download=True` to fetch them from "
                 f"the medarc/nanopath HF dataset before training."
             )
-        if int(train["global_size"]) > TILE_SIZE:
-            raise ValueError(f"global_size must be <= {TILE_SIZE}, got global_size={train['global_size']}")
+        # Source tiles are TILE_SIZE px; global_size > TILE_SIZE upsamples each crop onto a finer patch grid
+        # (more tokens, same real detail) to spend the spare FLOP budget and densify the patch features.
+        if int(train["global_size"]) > 2 * TILE_SIZE:
+            raise ValueError(f"global_size must be <= {2 * TILE_SIZE}, got global_size={train['global_size']}")
         # Lazy ParquetFile handles, opened on first __getitem__ in each worker
         # so fork-children own their own file positions.
         self._readers = [None] * len(self.shards)
         # Pull just the path column from each shard once to build the train index;
         # the JPEG bytes column stays on disk until __getitem__.
-        in_split_shard = []
-        in_split_row = []
+        # data.curation rebalances the 1M presentations toward under-represented tiles to fight TCGA's
+        # long-tailed redundancy: "slide" weights each tile by 1/(its slide's tile count) for free from the
+        # path index; "cluster" loads per-tile weights precomputed by curate.py (morphology k-means); "none"
+        # is uniform. train.py turns self.weights into a WeightedRandomSampler (None => plain shuffle).
+        self.curation = data["curation"]
+        cluster_w = dict(zip(*(pq.read_table(str(dataset_dir / "curation_clusters.parquet"), memory_map=True)[c].to_pylist() for c in ("path", "weight")))) if self.curation == "cluster" else None
+        in_split_shard, in_split_row, in_split_key = [], [], []
         for shard_idx, shard_path in enumerate(self.shards):
             paths = pq.read_table(str(shard_path), columns=["path"], memory_map=True)["path"].to_pylist()
             for row_idx, p in enumerate(paths):
@@ -142,11 +150,25 @@ class TCGATileDataset(Dataset):
                 if patient_in_val(patient_id_from_relpath(p), data["split_seed"], data["val_fraction"]) != is_train:
                     in_split_shard.append(shard_idx)
                     in_split_row.append(row_idx)
+                    if self.curation == "slide":
+                        in_split_key.append(p.split("/", 1)[0])
+                    elif self.curation == "cluster":
+                        in_split_key.append(cluster_w[p])
         if not in_split_shard:
             raise ValueError(f"no {'train' if is_train else 'val'} tiles found in {dataset_dir}; check val_fraction={data['val_fraction']}")
         # Two parallel int32 arrays (~32 MB total for 4M tiles) shared COW across DataLoader fork-workers.
         self.shard_of = np.asarray(in_split_shard, dtype=np.int32)
         self.row_of = np.asarray(in_split_row, dtype=np.int32)
+        # Mean-normalized per-tile sampling weights for the WeightedRandomSampler (None => uniform).
+        if self.curation == "slide":
+            counts = Counter(in_split_key)
+            w = np.array([1.0 / counts[k] for k in in_split_key], dtype=np.float64)
+            self.weights = w / w.mean()
+        elif self.curation == "cluster":
+            w = np.asarray(in_split_key, dtype=np.float64)
+            self.weights = w / w.mean()
+        else:
+            self.weights = None
         mean, std = data["mean"], data["std"]
         self.global_views = int(train["global_views"])
         self.local_views = int(train["local_views"])

@@ -26,7 +26,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.flop_counter import FlopCounterMode
 
 from dataloader import TCGATileDataset, TILE_SIZE
@@ -270,10 +270,13 @@ def main():
     # plain JEPA regresses raw teacher features. CAPI needs both the predictor and the iBOT head; JEPA only
     # the predictor; iBOT only the head. (jepa_cluster is read lazily, so iBOT configs need not define it.)
     capi = jepa and dino_cfg["jepa_cluster"]
-    use_head = (not jepa) or capi
-    # Block masks (large contiguous targets) only for plain JEPA's feature regression. CAPI predicts through
-    # the 131072-prototype iBOT head, so it reuses iBOT's lighter random masking to keep the CE memory bounded.
-    use_block_mask = jepa and not capi
+    # combo (dino.jepa_keep_ibot) = run JEPA's feature regression AND iBOT's cluster CE on the same masked
+    # patches (DINO+iBOT+JEPA), testing whether the semantic (iBOT) and geometric (JEPA) targets complement.
+    combo = jepa and dino_cfg["jepa_keep_ibot"]
+    use_head = (not jepa) or capi or combo
+    # Block masks (large contiguous targets) only for plain JEPA's feature regression. CAPI/combo predict through
+    # the 131072-prototype iBOT head, so they reuse iBOT's lighter random masking to keep the CE memory bounded.
+    use_block_mask = jepa and not capi and not combo
     student_ibot_head = DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device) if use_head else None
     teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
     student_predictor = JEPAPredictor(student_backbone.embed_dim, dino_cfg["jepa_pred_depth"], dino_cfg["jepa_pred_width"]).to(device) if jepa else None
@@ -400,7 +403,10 @@ def main():
     loader_kwargs = dict(batch_size=batch_size, drop_last=True, num_workers=train_cfg["num_workers"], pin_memory=True,
                          prefetch_factor=train_cfg["prefetch_factor"] if train_cfg["num_workers"] > 0 else None,
                          persistent_workers=train_cfg["persistent_workers"] and train_cfg["num_workers"] > 0)
-    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    # data.curation -> per-tile weights: draw the 1M presentations from a WeightedRandomSampler (balanced
+    # across slides / morphology clusters) instead of a uniform shuffle, to counter TCGA's long-tailed redundancy.
+    sampler = WeightedRandomSampler(torch.as_tensor(train_ds.weights), len(train_ds), replacement=True) if train_ds.weights is not None else None
+    train_loader = DataLoader(train_ds, shuffle=(sampler is None), sampler=sampler, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
     activation_checkpointing = bool(train_cfg["activation_checkpointing"])
@@ -483,6 +489,9 @@ def main():
             tgt = F.layer_norm(t["x_norm_patchtokens"].flatten(0, 1), (sg["x_norm_patchtokens"].shape[-1],))[mask_idx]
             pred = student_predictor(sg["x_norm_patchtokens"]).flatten(0, 1)[mask_idx]
             patch_loss = dino_cfg["jepa_weight"] * F.smooth_l1_loss(pred, tgt, reduction="none").mean(-1).mul(mask_w).sum() / max(1, b * 2)
+            if combo:  # add iBOT cluster-CE on the same masked patches (DINO + iBOT + JEPA)
+                s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
+                patch_loss = patch_loss + dino_cfg["ibot_loss_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
         else:
             s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
             patch_loss = dino_cfg["ibot_loss_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)

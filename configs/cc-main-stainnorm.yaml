@@ -25,6 +25,7 @@ data:
   blur_prob: 0.35
   tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
   stain_norm: true # true applies Macenko-style stain normalization (needs stain_ref)
+  curation: none # sampler bias: none | slide (1/slide-tile-count) | cluster (curate.py morphology weights)
   stain_ref: [0.0803, 0.0352, 0.0594] # per-channel median 99th-pct HED target; CALIBRATE to TCGA before a full run
 
 model:
@@ -69,6 +70,7 @@ dino:
   meta_weight: 0.0 # FINO metadata guidance weight on the CLS token (0.03 = FINO); 0 = off
   meta_spurious: true # true = suppress the TCGA site via gradient reversal; false = encode it (align)
   jepa_weight: 0.0 # >0 swaps iBOT for the I-JEPA predictor (latent smooth-L1 regression) at this loss weight
+  jepa_keep_ibot: false # with jepa_weight>0, also run iBOT cluster-CE on the masked patches (DINO+iBOT+JEPA)
 
 probe:
   enabled: true
