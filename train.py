@@ -192,13 +192,14 @@ def make_block_mask(batch, grid, device, n_blocks=4, block_scale=0.15):
 # block i gets lr * layerwise_decay^(depth - 1 - i); patch_embed gets the deepest decay
 # multiplied by patch_embed_lr_mult; biases and norms get no weight decay; the head's
 # final weight-norm last_layer parameters get an LR-freeze for the first dino.freeze_last_layer_fraction.
-def build_param_groups(student_backbone, student_dino_head, student_ibot_head, layerwise_decay, patch_embed_lr_mult):
+def build_param_groups(student_backbone, head_modules, layerwise_decay, patch_embed_lr_mult):
     depth = len(student_backbone.blocks)
     # Coalesce params that share (lr_mult, wd_mult, last_layer) into a single group each (~30 groups
     # instead of one-per-param), so AdamW's foreach path fuses the step across many tensors rather than
     # launching per-parameter kernels. Per-param lr/wd are unchanged, so the optimization is numerically identical.
+    # head_modules (dino head + patch head/predictor) all get base LR (no layerwise decay; only "backbone" does).
     coalesced = {}
-    modules = ((student_backbone, "backbone"), (student_dino_head, "dino_head"), (student_ibot_head, "ibot_head"))
+    modules = ((student_backbone, "backbone"), *((m, "head") for m in head_modules))
     for module, kind in modules:
         for name, p in module.named_parameters():
             if not p.requires_grad:
@@ -252,9 +253,15 @@ def main():
     # Patch objective: iBOT prototype self-distillation, OR (dino.jepa_weight>0) an I-JEPA predictor that
     # regresses EMA-teacher patch features at masked target blocks. JEPA replaces iBOT; both run with DINO+KDE.
     jepa = dino_cfg["jepa_weight"] > 0
-    student_ibot_head = None if jepa else DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device)
-    teacher_ibot_head = None if jepa else deepcopy(student_ibot_head)
+    # CAPI = predict the teacher's Sinkhorn-clustered patch targets (iBOT head) THROUGH the predictor;
+    # plain JEPA regresses raw teacher features. CAPI needs both the predictor and the iBOT head; JEPA only
+    # the predictor; iBOT only the head. (jepa_cluster is read lazily, so iBOT configs need not define it.)
+    capi = jepa and dino_cfg["jepa_cluster"]
+    use_head = (not jepa) or capi
+    student_ibot_head = DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device) if use_head else None
+    teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
     student_predictor = JEPAPredictor(student_backbone.embed_dim).to(device) if jepa else None
+    patch_modules = [m for m in (student_ibot_head, student_predictor) if m is not None]
     for m in (teacher_dino_head, teacher_ibot_head):
         if m is None:
             continue
@@ -262,8 +269,8 @@ def main():
             p.requires_grad = False
     backbone_activated_params = sum(p.numel() for p in student_backbone.parameters() if p.requires_grad)
     # AdamW param groups carry per-parameter LR/WD multipliers (LWD + patch_embed + biases-no-WD).
-    # The patch module is the iBOT head or, under JEPA, the predictor (both get base LR, no layerwise decay).
-    opt = torch.optim.AdamW(build_param_groups(student_backbone, student_dino_head, student_ibot_head or student_predictor, dino_cfg["layerwise_decay"], dino_cfg["patch_embed_lr_mult"]), lr=1.0, betas=(0.9, dino_cfg["adam_beta2"]))
+    # patch_modules is the iBOT head and/or the JEPA/CAPI predictor; all get base LR, no layerwise decay.
+    opt = torch.optim.AdamW(build_param_groups(student_backbone, [student_dino_head, *patch_modules], dino_cfg["layerwise_decay"], dino_cfg["patch_embed_lr_mult"]), lr=1.0, betas=(0.9, dino_cfg["adam_beta2"]))
     step = 0
     batch_size = int(train_cfg["batch_size"])
     max_train_samples = int(train_cfg["max_train_samples"])
@@ -431,7 +438,7 @@ def main():
             t = teacher_backbone(gf)
             t_cls = teacher_dino_head(t["x_norm_clstoken"]).chunk(train_cfg["global_views"])
             t_prob = sinkhorn(torch.cat((t_cls[1], t_cls[0])), t_temp).view(2, b, -1)
-            if not jepa:
+            if use_head:
                 t_patch_prob = sinkhorn(teacher_ibot_head(t["x_norm_patchtokens"].flatten(0, 1)[mask_idx]), t_temp)
         sg = student_backbone(gf, masks=masks, checkpoint=ckpt)
         sl = student_backbone(lf, checkpoint=ckpt)
@@ -439,9 +446,12 @@ def main():
         L = train_cfg["local_views"]
         local_loss = sum(dino_ce(x, y) for x in sl_cls.chunk(L) for y in t_prob) / (2 * L + 2)
         global_loss = dino_ce(sg_cls, t_prob.flatten(0, 1)) * 2 / (2 * L + 2)
-        # patch_loss is returned in the iBOT slot; under JEPA it's the predictor's smooth-L1 regression
-        # to the EMA teacher's feature-normalized (detached) patch reps at the masked target blocks.
-        if jepa:
+        # patch_loss (returned in the iBOT slot): CAPI = predictor->iBOT head -> CE vs the teacher's Sinkhorn
+        # clusters; JEPA = predictor -> smooth-L1 regression to raw EMA-teacher patch reps; iBOT = head -> CE.
+        if capi:
+            s_patch = student_ibot_head(student_predictor(sg["x_norm_patchtokens"]).flatten(0, 1)[mask_idx])
+            patch_loss = dino_cfg["jepa_weight"] * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
+        elif jepa:
             tgt = F.layer_norm(t["x_norm_patchtokens"].flatten(0, 1), (sg["x_norm_patchtokens"].shape[-1],))[mask_idx]
             pred = student_predictor(sg["x_norm_patchtokens"]).flatten(0, 1)[mask_idx]
             patch_loss = dino_cfg["jepa_weight"] * F.smooth_l1_loss(pred, tgt, reduction="none").mean(-1).mul(mask_w).sum() / max(1, b * 2)
@@ -455,7 +465,7 @@ def main():
     # Schedule terms (teacher_temp, kde_scale) drift over training, so read val curves as same-step
     # diagnostics. RNG is snapshotted/restored so val masks don't perturb the next training step.
     def evaluate(eval_step, eval_teacher_temp, eval_kde_scale):
-        for m in (student_backbone, student_dino_head, student_ibot_head or student_predictor):
+        for m in (student_backbone, student_dino_head, *patch_modules):
             m.eval()
         py_rng, cpu_rng, cuda_rng = random.getstate(), torch.random.get_rng_state(), torch.cuda.get_rng_state(device)
         random.seed(train_cfg["seed"] + eval_step)
@@ -534,7 +544,8 @@ def main():
             data_seconds = batch_started_at - data_wait_started_at
             student_backbone.train()
             student_dino_head.train()
-            (student_ibot_head or student_predictor).train()
+            for m in patch_modules:
+                m.train()
             completed_step = step + 1
             should_log = completed_step == 1 or completed_step % train_cfg["log_every"] == 0
             # Data identifiers stay on CPU and feed coverage metrics; image tensors move below.
@@ -579,7 +590,7 @@ def main():
                 opt.zero_grad(set_to_none=True)
                 total_loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(
-                    [*student_backbone.parameters(), *student_dino_head.parameters(), *(student_ibot_head or student_predictor).parameters()],
+                    [*student_backbone.parameters(), *student_dino_head.parameters(), *(p for m in patch_modules for p in m.parameters())],
                     dino_cfg["clip_grad"],
                 )
                 opt.step()
@@ -591,7 +602,7 @@ def main():
                 m = cosine_schedule(0.994, 1.0, frac)
                 update_ema(student_backbone, teacher_backbone, m)
                 update_ema(student_dino_head, teacher_dino_head, m)
-                if not jepa:
+                if use_head:
                     update_ema(student_ibot_head, teacher_ibot_head, m)
             step_seconds = time.monotonic() - batch_started_at
             examples_seen += batch_size
