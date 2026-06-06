@@ -140,7 +140,13 @@ class TCGATileDataset(Dataset):
         # path index; "cluster" loads per-tile weights precomputed by curate.py (morphology k-means); "none"
         # is uniform. train.py turns self.weights into a WeightedRandomSampler (None => plain shuffle).
         self.curation = data["curation"]
-        cluster_w = dict(zip(*(pq.read_table(str(dataset_dir / "curation_clusters.parquet"), memory_map=True)[c].to_pylist() for c in ("path", "weight")))) if self.curation == "cluster" else None
+        cluster_w = None
+        if self.curation == "cluster":
+            cpath = dataset_dir / "curation_clusters.parquet"
+            if not cpath.exists():
+                raise FileNotFoundError(f"{cpath} missing; run `python curate.py {cfg['config_path']}` on a COMPUTE node first (it's per-cluster /scratch — see curate.py header).")
+            cw = pq.read_table(str(cpath), memory_map=True)
+            cluster_w = dict(zip(cw["path"].to_pylist(), cw["weight"].to_pylist()))
         in_split_shard, in_split_row, in_split_key = [], [], []
         for shard_idx, shard_path in enumerate(self.shards):
             paths = pq.read_table(str(shard_path), columns=["path"], memory_map=True)["path"].to_pylist()

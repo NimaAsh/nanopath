@@ -13,6 +13,12 @@
 import io
 import os
 import sys
+
+# Cap BLAS/OMP threads BEFORE importing numpy/sklearn (it only takes effect pre-import): Alliance's OpenBLAS
+# is built for <=128 threads and SEGFAULTS when the final k-means runs on a whole 192-core Trillium node.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "64")
+os.environ.setdefault("OMP_NUM_THREADS", "64")
+
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
