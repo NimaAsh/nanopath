@@ -205,3 +205,20 @@ class DINOHead(nn.Module):
         x = self.mlp(x)
         x = F.normalize(x, dim=-1, p=2)
         return self.last_layer(x)
+
+
+# I-JEPA predictor head: a shallow transformer that regresses the EMA teacher's patch representations at
+# masked target blocks from the student's (block-masked) patch tokens — latent-space smooth-L1 regression
+# instead of iBOT's prototype cross-entropy. Reuses Block; trained by gradient (not EMA'd). Position is
+# already carried by the student tokens (backbone pos-embed), so no extra positional input is needed.
+class JEPAPredictor(nn.Module):
+    def __init__(self, dim, depth=4, heads=6):
+        super().__init__()
+        self.blocks = nn.ModuleList(Block(dim, heads, 4.0, 0.0) for _ in range(depth))
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.proj = nn.Linear(dim, dim, bias=True)
+
+    def forward(self, patch_tokens):
+        for blk in self.blocks:
+            patch_tokens = blk(patch_tokens)
+        return self.proj(self.norm(patch_tokens))
