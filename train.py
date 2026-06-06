@@ -341,7 +341,7 @@ def main():
     artifact_ignore = [
         line.strip() for line in (repo_dir / ".gitignore").read_text().splitlines()
         if line.strip() and not line.startswith("#")
-    ] + [".git/", "baselines/", "slurm/"]
+    ] + [".git/", ".gitignore", "baselines/", "slurm/"]
     ignored_roots = [output_dir.resolve(), wandb_dir.resolve()]
 
     def artifact_ignored(path):
