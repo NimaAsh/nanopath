@@ -22,9 +22,9 @@ REPO_DIR="${SLURM_SUBMIT_DIR:-$(dirname "$(dirname "${SCRIPT}")")}"
 # script. Cluster name comes from $CC_CLUSTER, falling back to the login hostname (trig*=Trillium).
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     case "${CC_CLUSTER:-$(hostname -f)}" in
-        *rorqual*)            FLAGS=(--gres=gpu:1      --cpus-per-task=16 --mem=64G --time=04:00:00) ;;
+        *rorqual*)            FLAGS=(--gres=gpu:1      --cpus-per-task=16 --mem=128G --time=04:00:00) ;;
         *trillium*|*trig*)    FLAGS=(--gpus-per-node=1 --cpus-per-gpu=16            --time=04:00:00) ;;
-        *nibi*)               FLAGS=(--gres=gpu:h100:1 --cpus-per-task=16 --mem=64G --time=04:00:00) ;;  # verify Nibi's GPU name vs Alliance docs
+        *nibi*)               FLAGS=(--gres=gpu:h100:1 --cpus-per-task=16 --mem=128G --time=04:00:00) ;;  # verify Nibi's GPU name vs Alliance docs
         *) echo "Unknown cluster CC_CLUSTER='${CC_CLUSTER:-}' / $(hostname -f); add a case branch in ${SCRIPT}." >&2; exit 1 ;;
     esac
     exec sbatch --export=ALL,NANOPATH_LAUNCHED=1 "${FLAGS[@]}" "${SCRIPT}" "$@"
