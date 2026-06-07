@@ -66,6 +66,7 @@ dino:
   meta_spurious: true # true = suppress the TCGA site via gradient reversal; false = encode it (align)
   jepa_weight: 0.0 # >0 swaps iBOT for the I-JEPA predictor (latent smooth-L1 regression) at this loss weight
   jepa_keep_ibot: false # with jepa_weight>0, also run iBOT cluster-CE on the masked patches (DINO+iBOT+JEPA)
+  jepa_block_mask: true # plain JEPA masks contiguous blocks; false = iBOT-style random scattered patches (geometry ablation)
 
 probe:
   enabled: true

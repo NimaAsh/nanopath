@@ -70,6 +70,7 @@ dino:
   meta_spurious: true # true = suppress the TCGA site via gradient reversal; false = encode it (align)
   jepa_weight: 1.0 # >0 swaps iBOT for the predictor-based patch objective at this loss weight
   jepa_keep_ibot: false # with jepa_weight>0, also run iBOT cluster-CE on the masked patches (DINO+iBOT+JEPA)
+  jepa_block_mask: true # plain JEPA masks contiguous blocks; false = iBOT-style random scattered patches (geometry ablation)
   jepa_cluster: true # true -> CAPI (predict Sinkhorn clusters via the predictor); false -> plain JEPA regression
   jepa_pred_depth: 4 # I-JEPA predictor depth (transformer Blocks); only read when jepa_weight>0
   jepa_pred_width: 0 # I-JEPA predictor width; 0 = full backbone dim, smaller (e.g. 192) regularizes

@@ -274,9 +274,11 @@ def main():
     # patches (DINO+iBOT+JEPA), testing whether the semantic (iBOT) and geometric (JEPA) targets complement.
     combo = jepa and dino_cfg["jepa_keep_ibot"]
     use_head = (not jepa) or capi or combo
-    # Block masks (large contiguous targets) only for plain JEPA's feature regression. CAPI/combo predict through
+    # Block masks (large contiguous targets) for plain JEPA's feature regression. CAPI/combo predict through
     # the 131072-prototype iBOT head, so they reuse iBOT's lighter random masking to keep the CE memory bounded.
-    use_block_mask = jepa and not capi and not combo
+    # dino.jepa_block_mask=false makes plain JEPA regress at iBOT-style random scattered patches instead — the
+    # clean contiguous-vs-random ablation (objective held fixed; match mask_prob to the block coverage ~0.45).
+    use_block_mask = jepa and not capi and not combo and dino_cfg["jepa_block_mask"]
     student_ibot_head = DINOHead(student_backbone.embed_dim, 131072, dino_cfg["head_hidden_dim"], dino_cfg["head_bottleneck_dim"], 3).to(device) if use_head else None
     teacher_ibot_head = deepcopy(student_ibot_head) if use_head else None
     student_predictor = JEPAPredictor(student_backbone.embed_dim, dino_cfg["jepa_pred_depth"], dino_cfg["jepa_pred_width"]).to(device) if jepa else None
