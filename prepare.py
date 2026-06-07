@@ -759,7 +759,7 @@ def main():
     # train.py never blocks on the network.
     from model import DINOV2_VARIANTS
     import torch
-    *_, pretrain_url = DINOV2_VARIANTS[cfg["model"]["type"]]
+    *_, pretrain_url = DINOV2_VARIANTS[cfg["model"]["type"].split("+", 1)[0]]
     weights_dir = Path(torch.hub.get_dir()) / "checkpoints"
     weights_path = weights_dir / Path(pretrain_url).name
     if weights_path.is_file():

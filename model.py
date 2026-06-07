@@ -107,6 +107,8 @@ class Block(nn.Module):
 class DinoV2ViT(nn.Module):
     def __init__(self, variant="dinov2_vits14_reg", drop_path_rate=0.0, variant_cfg=None):
         super().__init__()
+        variant, _, self.probe_feature_mode = variant.partition("+")
+        self.probe_feature_mode = self.probe_feature_mode or "cls"
         cfg = variant_cfg or DINOV2_VARIANTS[variant]
         dim, depth, heads, pretrain_grid, ffn, pos_has_cls, _ = cfg[:7]
         mlp_ratio, patch, registers = 4.0, 14, cfg[7] if len(cfg) > 7 else 4
@@ -165,13 +167,18 @@ class DinoV2ViT(nn.Module):
         }
 
     # Probe contract: encode_image returns [registers || patches] for the seg head;
-    # probe_features returns the cls token for classification probes.
+    # probe_features returns the configured tile vector for classification probes.
     def encode_image(self, x, checkpoint=False):
         out = self(x, checkpoint=checkpoint)
         return torch.cat([out["x_norm_regtokens"], out["x_norm_patchtokens"]], dim=1)
 
     def probe_features(self, x):
-        return self(x)["x_norm_clstoken"]
+        out = self(x)
+        if self.probe_feature_mode == "cls":
+            return out["x_norm_clstoken"]
+        if self.probe_feature_mode == "cls_reg_patch":
+            return torch.cat([out["x_norm_clstoken"], out["x_norm_regtokens"].mean(1), out["x_norm_patchtokens"].mean(1)], dim=-1)
+        raise KeyError(self.probe_feature_mode)
 
 
 # Strict-load Meta's pretrained weights for the model's declared variant.

@@ -4,10 +4,10 @@
 # patch objective (iBOT -> JEPA). Keep save_every null (the JEPA path builds no iBOT heads to checkpoint).
 
 project:
-  name: jepa
+  name: jepa-curate-slide-norep-seed2026
   family: nanopath
-  recipe_id: dinov2-vits14-reg-jepa
-  output_dir: /scratch/$USER/nanopath/main-leopard/jepa
+  recipe_id: dinov2-vits14-reg-jepa-curate-slide-norep
+  output_dir: /scratch/$USER/nanopath/main-leopard/jepa-curate-slide-norep-seed2026
   wandb_dir: /scratch/$USER/nanopath/wandb
 
 data:
@@ -24,14 +24,14 @@ data:
   blur_prob: 0.35
   tissue_thresh: 0.0 # >0 enables tissue rejection sampling: min fraction of saturated (non-background) pixels
   stain_norm: false # true applies Macenko-style stain normalization (needs stain_ref)
-  curation: none # sampler bias: none | slide (1/slide-tile-count) | cluster (curate.py morphology weights)
-  sampler_replacement: true # only read when curation != none; false keeps weighted draws unique until exhaustion
+  curation: slide # sampler bias: none | slide (1/slide-tile-count) | cluster (curate.py morphology weights)
+  sampler_replacement: false # only read when curation != none; false keeps weighted draws unique until exhaustion
 
 model:
   type: dinov2_vits14_reg # append +cls_reg_patch to export CLS+mean-register+mean-patch probe features
 
 train:
-  seed: 1337
+  seed: 2026
   bf16: true
   activation_checkpointing: false
   batch_size: 128

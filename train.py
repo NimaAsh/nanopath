@@ -245,6 +245,7 @@ def main():
     repo_dir = Path(__file__).resolve().parent
     labless_autosubmit_file = maybe_arm_labless_autosubmit(cfg, repo_dir)
     train_cfg = cfg["train"]
+    data_cfg = cfg["data"]
     dino_cfg = cfg["dino"]
     save_every = train_cfg["save_every"]
     save_checkpoints = save_every is not None
@@ -405,9 +406,9 @@ def main():
     loader_kwargs = dict(batch_size=batch_size, drop_last=True, num_workers=train_cfg["num_workers"], pin_memory=True,
                          prefetch_factor=train_cfg["prefetch_factor"] if train_cfg["num_workers"] > 0 else None,
                          persistent_workers=train_cfg["persistent_workers"] and train_cfg["num_workers"] > 0)
-    # data.curation -> per-tile weights: draw the 1M presentations from a WeightedRandomSampler (balanced
-    # across slides / morphology clusters) instead of a uniform shuffle, to counter TCGA's long-tailed redundancy.
-    sampler = WeightedRandomSampler(torch.as_tensor(train_ds.weights), len(train_ds), replacement=True) if train_ds.weights is not None else None
+    # data.curation -> per-tile weights; sampler_replacement=false keeps the weighted order unique until
+    # exhaustion, testing balance without giving up the 1M unique-presentation advantage.
+    sampler = WeightedRandomSampler(torch.as_tensor(train_ds.weights), len(train_ds), replacement=bool(data_cfg.get("sampler_replacement", True))) if train_ds.weights is not None else None
     train_loader = DataLoader(train_ds, shuffle=(sampler is None), sampler=sampler, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
@@ -530,7 +531,7 @@ def main():
             b = vg.shape[0]
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
-                masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device, block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
+                masks, mask_idx, mask_w = make_block_mask(b * train_cfg["global_views"], global_grid, device, n_blocks=dino_cfg.get("jepa_blocks", 4), block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(b * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
                 dino_l, ibot_l, kde_v, meta_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale, stage2=(not jepa) or examples_seen / max_train_samples >= dino_cfg["jepa_stage2_frac"], site_idx=(vbatch["site_id"] % 1024).to(device, non_blocking=True), update_protos=False)
             sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v + meta_v)], device=device)
             n_batches += 1
@@ -622,7 +623,7 @@ def main():
                 base_lr = last_layer_lr if group["last_layer"] else lr
                 group["lr"] = base_lr * group["lr_mult"]
                 group["weight_decay"] = wd * group["wd_mult"]
-            masks, mask_idx, mask_w = make_block_mask(batch_size * train_cfg["global_views"], global_grid, device, block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(batch_size * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
+            masks, mask_idx, mask_w = make_block_mask(batch_size * train_cfg["global_views"], global_grid, device, n_blocks=dino_cfg.get("jepa_blocks", 4), block_scale=dino_cfg["jepa_block_scale"]) if use_block_mask else make_masks(batch_size * train_cfg["global_views"], global_patches, device, dino_cfg["mask_prob"])
             kde_scale = min(1.0, max(0.0, (frac - 0.1) / 0.4))
             # Wrap forward + backward + opt.step in FlopCounterMode on the first step only;
             # subsequent steps reuse measured_flops_per_step (fixed shapes => fixed cost).
