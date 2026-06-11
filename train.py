@@ -173,15 +173,26 @@ def make_masks(batch, patches, device, mask_prob=0.5):
     return masks, idx, weights
 
 
-# I-JEPA target mask: contiguous square blocks instead of iBOT's scattered random patches.
-def make_block_mask(batch, grid, device, n_blocks=4, block_scale=0.10):
-    masks = torch.zeros(batch, grid, grid, dtype=torch.bool, device=device)
+# I-JEPA target mask: contiguous blocks, optionally biased toward teacher-prioritized windows.
+def make_block_mask(batch, grid, device, n_blocks=4, block_scale=0.10, priority=None, priority_blocks=0):
     side = max(1, round(grid * block_scale**0.5))
-    for i in range(batch):
-        for _ in range(n_blocks):
-            top = random.randint(0, grid - side)
-            left = random.randint(0, grid - side)
-            masks[i, top : top + side, left : left + side] = True
+    if priority_blocks:
+        span = grid - side + 1
+        scores = F.avg_pool2d(priority.view(batch, 1, grid, grid), side, stride=1).flatten(1)
+        candidates = scores.topk(max(priority_blocks, math.ceil(scores.shape[1] * 0.25)), dim=1).indices
+        pos = candidates.gather(1, torch.rand(batch, candidates.shape[1], device=device).topk(priority_blocks, dim=1).indices)
+        tops, lefts = torch.randint(span, (2, batch, n_blocks), device=device).unbind(0)
+        tops[:, :priority_blocks], lefts[:, :priority_blocks] = pos // span, pos % span
+        rows, cols = torch.arange(grid, device=device).view(1, 1, grid, 1), torch.arange(grid, device=device).view(1, 1, 1, grid)
+        masks = ((rows >= tops[..., None, None]) & (rows < tops[..., None, None] + side) &
+                 (cols >= lefts[..., None, None]) & (cols < lefts[..., None, None] + side)).any(1)
+    else:
+        masks = torch.zeros(batch, grid, grid, dtype=torch.bool, device=device)
+        for i in range(batch):
+            for _ in range(n_blocks):
+                top = random.randint(0, grid - side)
+                left = random.randint(0, grid - side)
+                masks[i, top : top + side, left : left + side] = True
     masks = masks.flatten(1)
     idx = masks.flatten().nonzero().flatten()
     weights = (1 / masks.sum(-1).clamp(min=1)).unsqueeze(-1).expand_as(masks)[masks]
@@ -397,6 +408,7 @@ def main():
     global_grid = train_cfg["global_size"] // student_backbone.patch_size
     global_patches = global_grid**2
     local_patches = (train_cfg["local_size"] // student_backbone.patch_size) ** 2
+    distinct_blocks = int(dino_cfg.get("jepa_distinct_blocks", 0))
     last_time = time.time()
     last_examples = examples_seen
     last_visible_patch_presentations = visible_patch_presentations
@@ -460,6 +472,13 @@ def main():
     def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False):
         with torch.no_grad():
             t = teacher_backbone(gf)
+            if jepa:
+                priority = -F.cosine_similarity(t["x_norm_patchtokens"], t["x_norm_clstoken"].unsqueeze(1), dim=-1) if distinct_blocks else None
+                masks, mask_idx, mask_w = make_block_mask(
+                    b * train_cfg["global_views"], global_grid, gf.device,
+                    n_blocks=int(dino_cfg.get("jepa_blocks", 4)), block_scale=float(dino_cfg["jepa_block_scale"]),
+                    priority=priority, priority_blocks=distinct_blocks,
+                )
             t_cls = teacher_dino_head(t["x_norm_clstoken"]).chunk(train_cfg["global_views"])
             t_prob = sinkhorn(torch.cat((t_cls[1], t_cls[0])), t_temp).view(2, b, -1)
             if not jepa:
@@ -498,17 +517,8 @@ def main():
             b = vg.shape[0]
             with torch.no_grad(), autocast:
                 gf, lf = vg.transpose(0, 1).flatten(0, 1), vl.transpose(0, 1).flatten(0, 1)
-                masks, mask_idx, mask_w = (
-                    make_block_mask(
-                        b * train_cfg["global_views"],
-                        global_grid,
-                        device,
-                        n_blocks=int(dino_cfg.get("jepa_blocks", 4)),
-                        block_scale=float(dino_cfg["jepa_block_scale"]),
-                    )
-                    if jepa
-                    else make_masks(b * train_cfg["global_views"], global_patches, device, float(dino_cfg.get("mask_prob", 0.5)))
-                )
+                masks, mask_idx, mask_w = (None, None, None) if jepa else make_masks(
+                    b * train_cfg["global_views"], global_patches, device, float(dino_cfg.get("mask_prob", 0.5)))
                 dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
             sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
             n_batches += 1
@@ -596,17 +606,8 @@ def main():
                 base_lr = last_layer_lr if group["last_layer"] else lr
                 group["lr"] = base_lr * group["lr_mult"]
                 group["weight_decay"] = wd * group["wd_mult"]
-            masks, mask_idx, mask_w = (
-                make_block_mask(
-                    batch_size * train_cfg["global_views"],
-                    global_grid,
-                    device,
-                    n_blocks=int(dino_cfg.get("jepa_blocks", 4)),
-                    block_scale=float(dino_cfg["jepa_block_scale"]),
-                )
-                if jepa
-                else make_masks(batch_size * train_cfg["global_views"], global_patches, device, float(dino_cfg.get("mask_prob", 0.5)))
-            )
+            masks, mask_idx, mask_w = (None, None, None) if jepa else make_masks(
+                batch_size * train_cfg["global_views"], global_patches, device, float(dino_cfg.get("mask_prob", 0.5)))
             kde_scale = min(1.0, max(0.0, (frac - 0.1) / 0.4))
             # Wrap forward + backward + opt.step in FlopCounterMode on the first step only;
             # subsequent steps reuse measured_flops_per_step (fixed shapes => fixed cost).
@@ -783,6 +784,7 @@ def main():
         "adam_beta2": dino_cfg["adam_beta2"],
         "kde_loss_weight": dino_cfg["kde_loss_weight"],
         "kde_concentration": dino_cfg["kde_concentration"],
+        "jepa_distinct_blocks": distinct_blocks,
         "drop_path_rate": dino_cfg["drop_path_rate"],
         "layerwise_decay": dino_cfg["layerwise_decay"],
         "probe_target_samples": probe_targets,
