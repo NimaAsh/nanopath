@@ -162,6 +162,17 @@ def kde_loss(x, concentration):
     return torch.logsumexp(sim, dim=1).mean() - math.log(max(1, sim.shape[1] - 1))
 
 
+# LeJEPA's sketched isotropic-Gaussian regularizer.
+def sigreg_loss(x):
+    t = torch.linspace(0, 3, 17, device=x.device)
+    weights = torch.full_like(t, 3 / 8)
+    weights[[0, -1]] /= 2
+    phi = torch.exp(-t.square() / 2)
+    x_t = (x.float() @ F.normalize(torch.randn(x.shape[-1], 256, device=x.device), dim=0)).unsqueeze(-1) * t
+    error = (x_t.cos().mean(1) - phi).square() + x_t.sin().mean(1).square()
+    return (error @ (weights * phi)).mean() * x.shape[1]
+
+
 # Sample iBOT masking pattern: per-image bernoulli on whether to mask, then random patch ratio.
 def make_masks(batch, patches, device, mask_prob=0.5):
     masks = torch.zeros(batch, patches, dtype=torch.bool, device=device)
@@ -397,6 +408,7 @@ def main():
     global_grid = train_cfg["global_size"] // student_backbone.patch_size
     global_patches = global_grid**2
     local_patches = (train_cfg["local_size"] // student_backbone.patch_size) ** 2
+    sigreg_weight = float(dino_cfg.get("sigreg_weight", 0.0))
     last_time = time.time()
     last_examples = examples_seen
     last_visible_patch_presentations = visible_patch_presentations
@@ -455,7 +467,7 @@ def main():
             "unique_patches_seen": unique_tiles_seen * unique_tile_patch_count,
         }
 
-    # Compute (dino_loss, ibot_loss, kde) for one batch of (gf, lf) crops with the given masks +
+    # Compute the SSL losses for one batch of (gf, lf) crops with the given masks +
     # schedule values. Used by both the train step and evaluate() (no_grad).
     def compute_losses(gf, lf, b, masks, mask_idx, mask_w, t_temp, k_scale, ckpt=False):
         with torch.no_grad():
@@ -466,7 +478,8 @@ def main():
                 t_patch_prob = sinkhorn(teacher_ibot_head(t["x_norm_patchtokens"].flatten(0, 1)[mask_idx]), t_temp)
         sg = student_backbone(gf, masks=masks, checkpoint=ckpt)
         sl = student_backbone(lf, checkpoint=ckpt)
-        sg_cls, sl_cls = student_dino_head(sg["x_norm_clstoken"]), student_dino_head(sl["x_norm_clstoken"])
+        sg_proj, sl_proj = student_dino_head.mlp(sg["x_norm_clstoken"]), student_dino_head.mlp(sl["x_norm_clstoken"])
+        sg_cls, sl_cls = (student_dino_head.last_layer(F.normalize(x, dim=-1)) for x in (sg_proj, sl_proj))
         L = train_cfg["local_views"]
         local_loss = sum(dino_ce(x, y) for x in sl_cls.chunk(L) for y in t_prob) / (2 * L + 2)
         global_loss = dino_ce(sg_cls, t_prob.flatten(0, 1)) * 2 / (2 * L + 2)
@@ -478,7 +491,8 @@ def main():
             s_patch = student_ibot_head(sg["x_norm_patchtokens"].flatten(0, 1)[mask_idx])
             ibot_loss = float(dino_cfg.get("ibot_loss_weight", 1.0)) * -(t_patch_prob * F.log_softmax(s_patch / 0.1, dim=-1)).sum(-1).mul(mask_w).sum() / max(1, b * 2)
         kde = dino_cfg["kde_loss_weight"] * k_scale * sum(kde_loss(x, dino_cfg["kde_concentration"]) for x in sg["x_norm_clstoken"].chunk(train_cfg["global_views"]))
-        return local_loss + global_loss, ibot_loss, kde
+        sigreg = sigreg_weight * sigreg_loss(torch.cat((sg_proj, sl_proj)).view(train_cfg["global_views"] + L, b, -1)) if sigreg_weight else sg_proj.new_zeros(())
+        return local_loss + global_loss, ibot_loss, kde, sigreg
 
     # Held-out validation pass: same DINO + iBOT + KDE losses on `val_batches` of the val split.
     # Schedule terms (teacher_temp, kde_scale) drift over training, so read val curves as same-step
@@ -489,7 +503,7 @@ def main():
         py_rng, cpu_rng, cuda_rng = random.getstate(), torch.random.get_rng_state(), torch.cuda.get_rng_state(device)
         random.seed(train_cfg["seed"] + eval_step)
         torch.manual_seed(train_cfg["seed"] + eval_step)
-        sums = torch.zeros(4, device=device)
+        sums = torch.zeros(5, device=device)
         n_batches = 0
         for vb_idx, vbatch in enumerate(val_loader):
             if vb_idx >= int(train_cfg["val_batches"]):
@@ -509,13 +523,13 @@ def main():
                     if jepa
                     else make_masks(b * train_cfg["global_views"], global_patches, device, float(dino_cfg.get("mask_prob", 0.5)))
                 )
-                dino_l, ibot_l, kde_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
-            sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(dino_l + ibot_l + kde_v)], device=device)
+                dino_l, ibot_l, kde_v, sigreg_v = compute_losses(gf, lf, b, masks, mask_idx, mask_w, eval_teacher_temp, eval_kde_scale)
+            sums += torch.tensor([float(dino_l), float(ibot_l), float(kde_v), float(sigreg_v), float(dino_l + ibot_l + kde_v + sigreg_v)], device=device)
             n_batches += 1
         random.setstate(py_rng)
         torch.random.set_rng_state(cpu_rng)
         torch.cuda.set_rng_state(cuda_rng, device)
-        return dict(zip(("dino", "ibot", "kde", "total"), (sums / max(1, n_batches)).tolist()))
+        return dict(zip(("dino", "ibot", "kde", "sigreg", "total"), (sums / max(1, n_batches)).tolist()))
 
     # Ingest completed probe result JSONs into metrics.jsonl and wandb.
     def log_probe_results():
@@ -617,11 +631,11 @@ def main():
                     # so [crop0_img0, crop0_img1, ..., crop1_img0, ...] for clean teacher/student alignment.
                     gf = global_views.transpose(0, 1).flatten(0, 1)
                     lf = local_views.transpose(0, 1).flatten(0, 1)
-                    dino_loss_value, ibot_loss, kde = compute_losses(
+                    dino_loss_value, ibot_loss, kde, sigreg = compute_losses(
                         gf, lf, batch_size, masks, mask_idx, mask_w, teacher_temp, kde_scale,
                         ckpt=activation_checkpointing,
                     )
-                    total_loss = dino_loss_value + ibot_loss + kde
+                    total_loss = dino_loss_value + ibot_loss + kde + sigreg
                 opt.zero_grad(set_to_none=True)
                 total_loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(
@@ -648,6 +662,7 @@ def main():
                     "dino": float(dino_loss_value.detach()),
                     "ibot": float(ibot_loss.detach()),
                     "kde": float(kde.detach()),
+                    "sigreg": float(sigreg.detach()),
                     "total": float(total_loss.detach()),
                 }
                 unique_counts = flush_unique_counts()
@@ -783,6 +798,7 @@ def main():
         "adam_beta2": dino_cfg["adam_beta2"],
         "kde_loss_weight": dino_cfg["kde_loss_weight"],
         "kde_concentration": dino_cfg["kde_concentration"],
+        "sigreg_weight": sigreg_weight,
         "drop_path_rate": dino_cfg["drop_path_rate"],
         "layerwise_decay": dino_cfg["layerwise_decay"],
         "probe_target_samples": probe_targets,
