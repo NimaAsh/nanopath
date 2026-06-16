@@ -122,6 +122,10 @@ class DinoV2ViT(nn.Module):
         rates = [drop_path_rate * i / max(1, depth - 1) for i in range(depth)]
         self.blocks = nn.ModuleList(Block(dim, heads, mlp_ratio, p, ffn=ffn) for p in rates)
         self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.probe_cls_layers = (4, 6, 8, depth - 1)
+        self.seg_patch_layers = tuple(range(depth - 4, depth))
+        self.seg_grid_scale = 2
+        self.jbu_sigma_range = 0.1
 
     # Bicubic resample of the checkpoint patch-pos grid to the current (h, w) grid.
     def _interpolate_pos_embed(self, h, w):
@@ -164,14 +168,48 @@ class DinoV2ViT(nn.Module):
             "x_norm_patchtokens": x[:, 1 + self.registers :],
         }
 
+    def _intermediate_tokens(self, x, layers, masks=None, checkpoint=False):
+        layers = tuple(layers)
+        wanted = set(layers)
+        x = self._prepare_tokens(x, masks)
+        out = {}
+        for i, blk in enumerate(self.blocks):
+            if checkpoint and self.training:
+                x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
+            if i in wanted:
+                out[i] = self.norm(x)
+        return [out[i] for i in layers]
+
+    def _jbu_upsample(self, feat_hw, guide_lr, guide_hr):
+        up = F.interpolate(feat_hw, size=guide_hr.shape[-2:], mode="bilinear", align_corners=False)
+        guide_src = F.interpolate(guide_lr, size=guide_hr.shape[-2:], mode="nearest")
+        w_range = torch.exp(-((guide_hr - guide_src).abs() ** 2) / (2.0 * self.jbu_sigma_range**2))
+        blur = F.avg_pool2d(F.pad(up, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1)
+        return up + (1.0 - w_range) * (up - blur)
+
     # Probe contract: encode_image returns [registers || patches] for the seg head;
     # probe_features returns the cls token for classification probes.
     def encode_image(self, x, checkpoint=False):
-        out = self(x, checkpoint=checkpoint)
-        return torch.cat([out["x_norm_regtokens"], out["x_norm_patchtokens"]], dim=1)
+        B, _, H, W = x.shape
+        h, w = H // self.patch_size, W // self.patch_size
+        guide = x.mean(dim=1, keepdim=True)
+        guide = (guide - guide.amin(dim=(2, 3), keepdim=True)) / (guide.amax(dim=(2, 3), keepdim=True) - guide.amin(dim=(2, 3), keepdim=True) + 1e-6)
+        guide_lr = F.interpolate(guide, size=(h, w), mode="area")
+        guide_hr = F.interpolate(guide, size=(h * self.seg_grid_scale, w * self.seg_grid_scale), mode="area")
+        outs = self._intermediate_tokens(x, self.seg_patch_layers, checkpoint=checkpoint)
+        regs = torch.cat([o[:, 1 : 1 + self.registers] for o in outs], dim=-1)
+        patches = torch.cat([o[:, 1 + self.registers :] for o in outs], dim=-1)
+        if self.seg_grid_scale != 1:
+            _, _, c = patches.shape
+            patches = patches.transpose(1, 2).reshape(B, c, h, w)
+            patches = self._jbu_upsample(patches.float(), guide_lr.float(), guide_hr.float()).to(outs[-1].dtype)
+            patches = patches.flatten(2).transpose(1, 2)
+        return torch.cat([regs, patches], dim=1)
 
     def probe_features(self, x):
-        return self(x)["x_norm_clstoken"]
+        return torch.cat([o[:, 0] for o in self._intermediate_tokens(x, self.probe_cls_layers)], dim=-1)
 
 
 # Strict-load Meta's pretrained weights for the model's declared variant.
